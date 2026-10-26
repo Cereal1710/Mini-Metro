@@ -25,6 +25,6 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react' // hoặc plugin tương ứng bạn dùng
 
 export default defineConfig({
-  plugins: [react()],
-  base: '/Mini-Metro/', // Chú ý: Bắt buộc phải có dấu gạch chéo ở đầu và cuối
+  base: '/Mini-Metro/', // Bắt buộc phải trùng với tên Repository trên GitHub
+  // các cấu hình khác giữ nguyên...
 })
