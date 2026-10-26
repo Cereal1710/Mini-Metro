@@ -76,25 +76,12 @@ export const ShopModal: React.FC<ShopModalProps> = ({
       currentCount: `${activeLinesCount}/${inventory.availableLines}`,
       countLabelVi: 'Đang dùng',
       countLabelEn: 'Active'
-    },
-    {
-      titleVi: 'Thẻ Ga Trung Chuyển',
-      titleEn: 'Interchange Hub Token',
-      descVi: 'Nâng cấp bất kỳ nhà ga nào lên sức chứa 14 khách và tăng tốc độ chuyển tàu.',
-      descEn: 'Upgrade any station to 14 capacity and speed up passenger line transfers.',
-      cost: interchangeCost,
-      icon: <Star className="w-5 h-5 text-amber-400" />,
-      canBuy: money >= interchangeCost,
-      action: onBuyInterchange,
-      currentCount: inventory.interchangeTokens,
-      countLabelVi: 'Thẻ sẵn có',
-      countLabelEn: 'Tokens'
     }
   ];
 
   return (
     <div className="fixed inset-0 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
-      <div className={`w-full max-w-xl rounded-2xl p-6 md:p-7 border shadow-2xl relative ${
+      <div className={`w-full max-w-xl max-h-[90dvh] overflow-y-auto rounded-2xl p-4 sm:p-6 md:p-7 border shadow-2xl relative ${
         isDark ? 'bg-neutral-900 border-neutral-800 text-neutral-100' : 'bg-white border-neutral-200 text-neutral-900'
       }`}>
         {/* Close Button */}

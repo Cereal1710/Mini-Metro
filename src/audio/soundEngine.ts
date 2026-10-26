@@ -243,6 +243,38 @@ class SoundEngine {
   }
 
   /**
+   * Cash reward sound
+   */
+  public playCashReward() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      const notes = [587.33, 880.00]; // D5 -> A5
+      notes.forEach((freq, idx) => {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, now + idx * 0.08);
+
+        gain.gain.setValueAtTime(0.001, now + idx * 0.08);
+        gain.gain.exponentialRampToValueAtTime(0.18 * this.volume, now + idx * 0.08 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.08 + 0.35);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now + idx * 0.08);
+        osc.stop(now + idx * 0.08 + 0.4);
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
    * Upgrade unlocked or celebration fanfare
    */
   public playFanfare() {
@@ -305,6 +337,206 @@ class SoundEngine {
         osc.start(now + idx * 0.15);
         osc.stop(now + idx * 0.15 + 0.75);
       });
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Authentic Hanoi Metro (Line 2A Cat Linh - Ha Dong) 4-note arrival chime
+   */
+  public playHanoiMetroChime() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      // Melodic major chime: E5 -> G#5 -> B5 -> E6
+      const chimeNotes = [659.25, 830.61, 987.77, 1318.51];
+      chimeNotes.forEach((freq, idx) => {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, now + idx * 0.16);
+
+        gain.gain.setValueAtTime(0.001, now + idx * 0.16);
+        gain.gain.exponentialRampToValueAtTime(0.18 * this.volume, now + idx * 0.16 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.16 + 0.6);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now + idx * 0.16);
+        osc.stop(now + idx * 0.16 + 0.65);
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Resonant bell of St. Joseph's Cathedral / Hanoi Temple
+   */
+  public playCathedralBell() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      const fundamental = 220; // A3 deep bronze bell
+      const harmonics = [1, 2.02, 2.76, 4.07, 5.43];
+
+      harmonics.forEach((h, idx) => {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = idx === 0 ? 'sine' : 'triangle';
+        osc.frequency.setValueAtTime(fundamental * h, now);
+
+        const decay = 2.4 / (idx + 1);
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.exponentialRampToValueAtTime((0.15 / (idx + 1)) * this.volume, now + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + decay);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + decay + 0.1);
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Inspector boards train - distinctive dual-whistle chirp
+   */
+  public playInspectorBoard() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      // High-pitched conductor whistle: 1480Hz -> 1760Hz
+      [0, 0.08].forEach((delay, idx) => {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(idx === 0 ? 1480 : 1760, now + delay);
+        gain.gain.setValueAtTime(0.001, now + delay);
+        gain.gain.exponentialRampToValueAtTime(0.14 * this.volume, now + delay + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + delay + 0.12);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now + delay);
+        osc.stop(now + delay + 0.14);
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Inspector visits and verifies a station - ascending chime with progress level
+   */
+  public playInspectorCheck(step = 1) {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      const baseFreq = 523.25; // C5
+      const noteMultiplier = Math.pow(2, (step * 2) / 12);
+      const freq = baseFreq * noteMultiplier;
+
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.exponentialRampToValueAtTime(0.16 * this.volume, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.3);
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Inspector finishes 5 stations successfully: glorious triumphant victory fanfare
+   */
+  public playInspectorReward() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      // Bright major triad arpeggio: C5 -> E5 -> G5 -> C6
+      const chordNotes = [523.25, 659.25, 783.99, 1046.50];
+      chordNotes.forEach((freq, idx) => {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, now + idx * 0.11);
+
+        gain.gain.setValueAtTime(0.001, now + idx * 0.11);
+        gain.gain.exponentialRampToValueAtTime(0.20 * this.volume, now + idx * 0.11 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.11 + 0.5);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(now + idx * 0.11);
+        osc.stop(now + idx * 0.11 + 0.55);
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Inspector mission failed (timeout or overcrowding) - low buzz
+   */
+  public playInspectorFail() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    try {
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(220, now);
+      osc.frequency.exponentialRampToValueAtTime(110, now + 0.35);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.exponentialRampToValueAtTime(0.15 * this.volume, now + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.38);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.4);
     } catch {
       // ignore
     }

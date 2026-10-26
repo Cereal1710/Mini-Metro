@@ -24,7 +24,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in zoom-in-95 duration-200">
-      <div className={`w-full max-w-lg rounded-2xl p-6 md:p-8 border shadow-2xl relative text-center ${
+      <div className={`w-full max-w-lg max-h-[90dvh] overflow-y-auto rounded-2xl p-5 sm:p-6 md:p-8 border shadow-2xl relative text-center ${
         isDark ? 'bg-neutral-900 border-neutral-800 text-neutral-100' : 'bg-white border-neutral-200 text-neutral-900'
       }`}>
         {/* Red Alert Icon */}

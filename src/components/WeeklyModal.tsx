@@ -26,11 +26,11 @@ export const WeeklyModal: React.FC<WeeklyModalProps> = ({
       color: 'border-emerald-500/40 hover:border-emerald-500'
     },
     {
-      titleVi: 'Gói Đội Tàu Cao Tải',
-      titleEn: 'High-Capacity Fleet Package',
-      descVi: '+2 Đoàn tàu mới và +1 Thẻ nâng cấp Ga Trung chuyển (Hub)',
-      descEn: '+2 New Trains and +1 Interchange Hub Upgrade token',
-      icons: [<Train className="w-5 h-5 text-purple-400" />, <Star className="w-5 h-5 text-amber-400" />],
+      titleVi: 'Gói Đội Tàu & Ngân Sách',
+      titleEn: 'Fleet Expansion & Funding',
+      descVi: '+2 Đoàn tàu mới và +$500 ngân sách thành phố',
+      descEn: '+2 New Trains and +$500 city grant budget',
+      icons: [<Train className="w-5 h-5 text-purple-400" />, <DollarSign className="w-5 h-5 text-emerald-400" />],
       color: 'border-amber-500/40 hover:border-amber-500'
     },
     {
@@ -45,7 +45,7 @@ export const WeeklyModal: React.FC<WeeklyModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in zoom-in-95 duration-200">
-      <div className={`w-full max-w-xl rounded-2xl p-6 md:p-8 border shadow-2xl relative ${
+      <div className={`w-full max-w-xl max-h-[90dvh] overflow-y-auto rounded-2xl p-5 sm:p-6 md:p-8 border shadow-2xl relative ${
         isDark ? 'bg-neutral-900 border-neutral-800 text-neutral-100' : 'bg-white border-neutral-200 text-neutral-900'
       }`}>
         {/* Banner icon */}

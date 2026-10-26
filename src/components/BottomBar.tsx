@@ -8,7 +8,9 @@ import {
   ArrowRight,
   ShieldAlert,
   Star,
-  Shuffle
+  Shuffle,
+  Sparkles,
+  Infinity as InfinityIcon
 } from 'lucide-react';
 import { MetroLine, GameInventory, Train } from '../types/game';
 
@@ -19,6 +21,8 @@ interface BottomBarProps {
   selectedLineId: string | null;
   theme: 'dark' | 'light';
   lang: 'vi' | 'en';
+  isUnlimitedMode?: boolean;
+  isCreativeToolbarOpen?: boolean;
   onSelectLine: (lineId: string | null) => void;
   onCreateNewLine: () => void;
   onDeleteLine: (lineId: string) => void;
@@ -27,6 +31,7 @@ interface BottomBarProps {
   onAddCarriage: (lineId: string) => void;
   onRemoveCarriage: (lineId: string) => void;
   onOpenShop: () => void;
+  onToggleCreativeToolbar?: () => void;
 }
 
 export const BottomBar: React.FC<BottomBarProps> = ({
@@ -36,6 +41,8 @@ export const BottomBar: React.FC<BottomBarProps> = ({
   selectedLineId,
   theme,
   lang,
+  isUnlimitedMode = false,
+  isCreativeToolbarOpen = false,
   onSelectLine,
   onCreateNewLine,
   onDeleteLine,
@@ -43,7 +50,8 @@ export const BottomBar: React.FC<BottomBarProps> = ({
   onRemoveTrain,
   onAddCarriage,
   onRemoveCarriage,
-  onOpenShop
+  onOpenShop,
+  onToggleCreativeToolbar
 }) => {
   const isDark = theme === 'dark';
 
@@ -133,18 +141,20 @@ export const BottomBar: React.FC<BottomBarProps> = ({
 
                 {/* Thêm tàu button */}
                 <button
-                  disabled={inventory.unassignedTrains <= 0}
+                  disabled={!isUnlimitedMode && inventory.unassignedTrains <= 0}
                   onClick={(e) => {
                     e.stopPropagation();
                     onDeployTrain(line.id);
                   }}
                   title={
-                    inventory.unassignedTrains > 0
+                    isUnlimitedMode
+                      ? (lang === 'vi' ? 'Thêm 1 đoàn tàu vào tuyến (Vô hạn tàu khả dụng)' : 'Deploy 1 train (Unlimited fleet enabled)')
+                      : inventory.unassignedTrains > 0
                       ? (lang === 'vi' ? `Thêm 1 đoàn tàu vào tuyến (Kho còn ${inventory.unassignedTrains} tàu)` : `Deploy 1 train to line (${inventory.unassignedTrains} ready in depot)`)
                       : (lang === 'vi' ? 'Kho hết tàu dự phòng! Bấm giảm (-) ở tuyến khác để chuyển sang đây, hoặc mua thêm ở Shop' : 'Depot empty! Recall from other lines or buy in Shop')
                   }
                   className={`w-6 h-6 flex items-center justify-center rounded transition font-bold ${
-                    inventory.unassignedTrains > 0
+                    isUnlimitedMode || inventory.unassignedTrains > 0
                       ? 'bg-emerald-500/25 text-emerald-400 hover:bg-emerald-500 hover:text-white cursor-pointer active:scale-95 shadow-xs'
                       : 'opacity-25 cursor-not-allowed text-neutral-500'
                   }`}
@@ -192,7 +202,7 @@ export const BottomBar: React.FC<BottomBarProps> = ({
 
                 {/* Gắn toa button */}
                 <button
-                  disabled={inventory.carriages <= 0 || trainsOnThisLine.length === 0 || carriagesOnThisLine >= maxCarriagesOnLine}
+                  disabled={(!isUnlimitedMode && inventory.carriages <= 0) || trainsOnThisLine.length === 0 || (!isUnlimitedMode && carriagesOnThisLine >= maxCarriagesOnLine)}
                   onClick={(e) => {
                     e.stopPropagation();
                     onAddCarriage(line.id);
@@ -200,6 +210,8 @@ export const BottomBar: React.FC<BottomBarProps> = ({
                   title={
                     trainsOnThisLine.length === 0
                       ? (lang === 'vi' ? 'Cần có tàu chạy trên tuyến trước khi gắn toa' : 'Deploy a train first before attaching carriages')
+                      : isUnlimitedMode
+                      ? (lang === 'vi' ? 'Gắn 1 toa xe (Vô hạn toa khả dụng, +4 khách)' : 'Attach 1 carriage (Unlimited mode enabled)')
                       : inventory.carriages > 0 && carriagesOnThisLine < maxCarriagesOnLine
                       ? (lang === 'vi' ? `Gắn 1 toa xe vào tàu (Kho còn ${inventory.carriages} toa, sức chứa +4 khách)` : `Attach 1 carriage (${inventory.carriages} ready in depot, +4 capacity)`)
                       : carriagesOnThisLine >= maxCarriagesOnLine
@@ -207,7 +219,7 @@ export const BottomBar: React.FC<BottomBarProps> = ({
                       : (lang === 'vi' ? 'Kho tạm hết toa xe! Mua thêm trong Shop hoặc nhận thưởng tuần' : 'Depot empty! Buy in Shop or weekly rewards')
                   }
                   className={`w-6 h-6 flex items-center justify-center rounded transition font-bold ${
-                    inventory.carriages > 0 && trainsOnThisLine.length > 0 && carriagesOnThisLine < maxCarriagesOnLine
+                    (isUnlimitedMode || (inventory.carriages > 0 && carriagesOnThisLine < maxCarriagesOnLine)) && trainsOnThisLine.length > 0
                       ? 'bg-indigo-500/25 text-indigo-300 hover:bg-indigo-500 hover:text-white cursor-pointer active:scale-95 shadow-xs'
                       : 'opacity-25 cursor-not-allowed text-neutral-500'
                   }`}
@@ -232,10 +244,10 @@ export const BottomBar: React.FC<BottomBarProps> = ({
         })}
 
         {/* Add New Line Button */}
-        {lines.length < inventory.availableLines && (
+        {(isUnlimitedMode || lines.length < inventory.availableLines) && (
           <button
             onClick={onCreateNewLine}
-            className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed transition text-xs font-bold whitespace-nowrap ${
+            className={`shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed transition text-xs font-bold whitespace-nowrap cursor-pointer active:scale-95 ${
               isDark
                 ? 'border-neutral-600 hover:border-emerald-500 hover:text-emerald-400 bg-neutral-800/40'
                 : 'border-neutral-300 hover:border-emerald-600 hover:text-emerald-600 bg-neutral-50'
@@ -243,13 +255,41 @@ export const BottomBar: React.FC<BottomBarProps> = ({
           >
             <Plus className="w-4 h-4" />
             <span>{lang === 'vi' ? 'Tạo tuyến' : 'New Line'}</span>
-            <span className="text-[10px] opacity-60">({lines.length}/{inventory.availableLines})</span>
+            <span className="text-[10px] opacity-60">
+              ({lines.length}/{isUnlimitedMode ? '∞' : inventory.availableLines})
+            </span>
           </button>
         )}
       </div>
 
-      {/* Right: Quick Inventory Counters & Shop Trigger */}
-      <div className="shrink-0 hidden sm:flex items-center gap-2.5">
+      {/* Right: Quick Inventory Counters, Creative Toggle & Shop Trigger */}
+      <div className="shrink-0 flex items-center gap-2">
+        {/* Creative Mode / Station & Terrain Builder Button */}
+        {onToggleCreativeToolbar && (
+          <button
+            onClick={onToggleCreativeToolbar}
+            title={lang === 'vi' ? 'Bộ công cụ sáng tạo: Thêm ga, vẽ địa hình sông nước, vô hạn tuyến đường' : 'Creative Tools: Add stations, sculpt rivers, unlimited rails'}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-extrabold border transition shadow-sm cursor-pointer active:scale-95 ${
+              isCreativeToolbarOpen
+                ? 'bg-linear-to-r from-amber-500 to-rose-500 text-white border-amber-400 ring-2 ring-amber-400 shadow-md'
+                : isUnlimitedMode
+                ? 'bg-amber-500/20 border-amber-500/50 text-amber-400 hover:bg-amber-500/30'
+                : isDark
+                ? 'bg-neutral-800/90 border-neutral-700 hover:border-neutral-500 text-neutral-200 hover:text-white'
+                : 'bg-neutral-100 border-neutral-300 hover:border-neutral-400 text-neutral-800'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 text-amber-400" />
+            <span className="hidden md:inline">
+              {lang === 'vi' ? 'Sáng Tạo' : 'Creative'}
+            </span>
+            {isUnlimitedMode && (
+              <span className="px-1 py-0.2 rounded text-[10px] bg-amber-500 text-black font-black">
+                ∞
+              </span>
+            )}
+          </button>
+        )}
         {/* Unassigned Trains */}
         <div
           onClick={onOpenShop}

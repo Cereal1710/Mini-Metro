@@ -4,7 +4,14 @@ import {
   Train,
   FloatingText,
   RiverPolygon,
-  StationShape
+  StationShape,
+  WeatherState,
+  MapPark,
+  MapBridge,
+  MapRoad,
+  MapLandmark,
+  MapDistrictLabel,
+  InspectorState
 } from '../types/game';
 import {
   distance,
@@ -21,6 +28,46 @@ import {
 
 const textWidthCache = new Map<string, number>();
 
+export interface LayerVisibilityOptions {
+  rivers?: boolean;
+  landmarks?: boolean;
+  parks?: boolean;
+  roads?: boolean;
+  districts?: boolean;
+  bridges?: boolean;
+  realLinesRef?: boolean;
+}
+
+export interface RenderedTrainInfo {
+  trainId: string;
+  lineId: string;
+  cars: { x: number; y: number }[];
+}
+
+let lastRenderedTrains: RenderedTrainInfo[] = [];
+
+export function getTrainAtScreenPos(
+  vp: { rect: { left: number; top: number }; scale: number; cameraZoom: number; offsetX: number; offsetY: number; panX: number; panY: number },
+  clientX: number,
+  clientY: number,
+  hitTolerance = 22
+): { trainId: string; lineId: string } | null {
+  const totalScale = vp.scale * vp.cameraZoom;
+  const totalOffsetX = vp.offsetX + vp.panX;
+  const totalOffsetY = vp.offsetY + vp.panY;
+
+  for (const t of lastRenderedTrains) {
+    for (const car of t.cars) {
+      const carScreenX = vp.rect.left + totalOffsetX + car.x * totalScale;
+      const carScreenY = vp.rect.top + totalOffsetY + car.y * totalScale;
+      if (Math.hypot(clientX - carScreenX, clientY - carScreenY) <= hitTolerance) {
+        return { trainId: t.trainId, lineId: t.lineId };
+      }
+    }
+  }
+  return null;
+}
+
 export interface RenderOptions {
   theme: 'dark' | 'light';
   selectedLineId: string | null;
@@ -35,6 +82,16 @@ export interface RenderOptions {
   selectedStationId?: string | null;
   showStationNames: boolean;
   trackStyle?: TrackRoutingStyle;
+  hideStationIcons?: boolean;
+  hidePassengerCount?: boolean;
+  weather?: WeatherState;
+  timeOfDayHours?: number;
+  parks?: MapPark[];
+  bridges?: MapBridge[];
+  roads?: MapRoad[];
+  landmarks?: MapLandmark[];
+  districts?: MapDistrictLabel[];
+  inspectorState?: InspectorState;
 }
 
 export function drawShape(
@@ -159,24 +216,65 @@ export function renderScene(
   const stationBorderColor = isDark ? '#090D16' : '#FFFFFF';
   const textColor = isDark ? '#F1F5F9' : '#0F172A';
 
-  ctx.clearRect(0, 0, width, height);
-
-  // Background
-  ctx.fillStyle = bgColor;
-  ctx.fillRect(0, 0, width, height);
-
-  // Subtle architectural grid dots (single batched path for ultra-fast 60fps performance)
+  // Subtle architectural grid dots (single batched path covering wide boundaries for panning & zooming)
   ctx.fillStyle = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)';
   ctx.beginPath();
   const gridSize = 64;
-  for (let x = 32; x < width; x += gridSize) {
-    for (let y = 32; y < height; y += gridSize) {
+  const startX = -1280;
+  const endX = width + 1280;
+  const startY = -1280;
+  const endY = height + 1280;
+  for (let x = startX; x < endX; x += gridSize) {
+    for (let y = startY; y < endY; y += gridSize) {
       ctx.rect(x - 1, y - 1, 2, 2);
     }
   }
   ctx.fill();
 
-  // Draw Water / Rivers
+  // Time of day calculation for subtle day/night atmosphere
+  const timeHours = options.timeOfDayHours ?? 12.0;
+  const isNight = timeHours >= 18.5 || timeHours <= 5.5;
+  const now = performance.now() / 1000;
+
+  // 1. Draw Parks & Green Spaces (Soft translucent pastel, non-distracting)
+  if (options.parks && options.parks.length > 0) {
+    const parkFill = isDark ? 'rgba(34, 197, 94, 0.08)' : 'rgba(16, 185, 129, 0.09)';
+    const parkStroke = isDark ? 'rgba(34, 197, 94, 0.18)' : 'rgba(16, 185, 129, 0.20)';
+    for (const park of options.parks) {
+      if (park.points.length < 3) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(park.points[0].x, park.points[0].y);
+      for (let i = 1; i < park.points.length; i++) {
+        ctx.lineTo(park.points[i].x, park.points[i].y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = parkFill;
+      ctx.fill();
+      ctx.strokeStyle = parkStroke;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+
+      // Subtle muted park name label
+      if (park.nameVi && park.points.length >= 3) {
+        let cx = 0, cy = 0;
+        for (const pt of park.points) {
+          cx += pt.x;
+          cy += pt.y;
+        }
+        cx /= park.points.length;
+        cy /= park.points.length;
+        ctx.font = 'italic 500 8.5px sans-serif';
+        ctx.fillStyle = isDark ? 'rgba(110, 231, 183, 0.32)' : 'rgba(5, 150, 105, 0.40)';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(park.nameVi.split(' (')[0], cx, cy);
+      }
+      ctx.restore();
+    }
+  }
+
+  // 2. Draw Water / Rivers & River Islands
   for (const river of rivers) {
     if (river.points.length < 3) continue;
     ctx.save();
@@ -186,12 +284,211 @@ export function renderScene(
       ctx.lineTo(river.points[i].x, river.points[i].y);
     }
     ctx.closePath();
-    ctx.fillStyle = waterColor;
-    ctx.fill();
 
-    ctx.strokeStyle = waterBorderColor;
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
+    if (river.isIsland) {
+      // River Island (e.g. Bãi Giữa Sông Hồng): lush silt green/sand tone
+      ctx.fillStyle = isDark ? '#162822' : '#E6F4EA';
+      ctx.fill();
+      ctx.strokeStyle = isDark ? '#234438' : '#CEEAD6';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = waterColor;
+      ctx.fill();
+      ctx.strokeStyle = waterBorderColor;
+      ctx.lineWidth = 2.0;
+      ctx.stroke();
+
+      // Subtle animated water ripple shimmer along river center
+      if (river.points.length >= 6) {
+        const midIdx1 = Math.floor(river.points.length * 0.25);
+        const midIdx2 = Math.floor(river.points.length * 0.75);
+        const pA = river.points[midIdx1];
+        const pB = river.points[midIdx2];
+        const waveOffset = Math.sin(now * 1.8) * 4;
+        ctx.strokeStyle = isDark ? 'rgba(56, 189, 248, 0.12)' : 'rgba(14, 165, 233, 0.15)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([14, 20]);
+        ctx.beginPath();
+        ctx.moveTo(pA.x + waveOffset, pA.y);
+        ctx.lineTo(pB.x - waveOffset, pB.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Name label for large water bodies
+    if (river.name && !river.isIsland) {
+      const mid = river.points[Math.floor(river.points.length / 2)];
+      if (mid) {
+        ctx.font = 'italic 600 10px sans-serif';
+        ctx.fillStyle = isDark ? 'rgba(186, 230, 253, 0.35)' : 'rgba(2, 132, 199, 0.40)';
+        ctx.textAlign = 'center';
+        ctx.fillText(river.name.split(' (')[0], mid.x, mid.y);
+      }
+    }
+    ctx.restore();
+  }
+
+  // 3. Draw Major Arterial Roads & Ring Roads (Very subtle, low contrast)
+  if (options.roads && options.roads.length > 0) {
+    ctx.save();
+    for (const road of options.roads) {
+      if (road.points.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(road.points[0].x, road.points[0].y);
+      for (let i = 1; i < road.points.length; i++) {
+        ctx.lineTo(road.points[i].x, road.points[i].y);
+      }
+      ctx.strokeStyle = isDark ? 'rgba(148, 163, 184, 0.12)' : 'rgba(148, 163, 184, 0.16)';
+      ctx.lineWidth = road.isRing ? 2.4 : 1.4;
+      if (road.isRing) {
+        ctx.setLineDash([8, 6]);
+      } else {
+        ctx.setLineDash([]);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 4. Draw Bridges with Iconic Silhouettes & Night LED lights
+  if (options.bridges && options.bridges.length > 0) {
+    for (const bridge of options.bridges) {
+      const { p1, p2 } = bridge;
+      ctx.save();
+
+      // Main bridge road span
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.strokeStyle = isDark ? 'rgba(203, 213, 225, 0.45)' : 'rgba(71, 85, 105, 0.45)';
+      ctx.lineWidth = bridge.width ? Math.min(5.5, bridge.width * 0.32) : 2.8;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const bDist = Math.max(1, Math.hypot(dx, dy));
+      const perpX = -dy / bDist;
+      const perpY = dx / bDist;
+
+      // Type-specific bridge architecture
+      if (bridge.type === 'cable_stayed') {
+        // Cầu Nhật Tân: 5 diamond towers with stay cables
+        const towerCount = bridge.towers || 5;
+        for (let t = 1; t <= towerCount; t++) {
+          const tFrac = t / (towerCount + 1);
+          const tx = p1.x + dx * tFrac;
+          const ty = p1.y + dy * tFrac;
+          const tHeight = 12;
+
+          // Tower pillar
+          ctx.beginPath();
+          ctx.moveTo(tx - perpX * tHeight, ty - perpY * tHeight);
+          ctx.lineTo(tx + perpX * tHeight, ty + perpY * tHeight);
+          ctx.strokeStyle = bridge.color || '#06B6D4';
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+
+          // Cable fan lines
+          ctx.beginPath();
+          ctx.moveTo(tx + perpX * tHeight, ty + perpY * tHeight);
+          ctx.lineTo(tx - dx * 0.08, ty - dy * 0.08);
+          ctx.moveTo(tx + perpX * tHeight, ty + perpY * tHeight);
+          ctx.lineTo(tx + dx * 0.08, ty + dy * 0.08);
+          ctx.strokeStyle = isDark ? 'rgba(6, 182, 212, 0.35)' : 'rgba(8, 145, 178, 0.30)';
+          ctx.lineWidth = 0.8;
+          ctx.stroke();
+
+          // Night illumination light on tower tip
+          if (isNight) {
+            ctx.beginPath();
+            ctx.arc(tx + perpX * tHeight, ty + perpY * tHeight, 2, 0, Math.PI * 2);
+            ctx.fillStyle = '#38BDF8';
+            ctx.shadowColor = '#38BDF8';
+            ctx.shadowBlur = 5;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+          }
+        }
+      } else if (bridge.type === 'cantilever' || bridge.type === 'truss') {
+        // Cầu Long Biên / Thăng Long steel truss spans
+        const spans = 5;
+        ctx.beginPath();
+        for (let s = 0; s < spans; s++) {
+          const f1 = s / spans;
+          const f2 = (s + 0.5) / spans;
+          const f3 = (s + 1) / spans;
+          const x1 = p1.x + dx * f1, y1 = p1.y + dy * f1;
+          const x2 = p1.x + dx * f2, y2 = p1.y + dy * f2;
+          const x3 = p1.x + dx * f3, y3 = p1.y + dy * f3;
+          const trussH = 6;
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2 + perpX * trussH, y2 + perpY * trussH);
+          ctx.lineTo(x3, y3);
+        }
+        ctx.strokeStyle = isDark ? 'rgba(244, 63, 94, 0.35)' : 'rgba(225, 29, 72, 0.35)';
+        ctx.lineWidth = 1.0;
+        ctx.stroke();
+      }
+
+      // Night LED bridge deck line
+      if (isNight) {
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([4, 6]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Bridge name text
+      const midX = (p1.x + p2.x) / 2 + perpX * 8;
+      const midY = (p1.y + p2.y) / 2 + perpY * 8;
+      ctx.font = '600 8px sans-serif';
+      ctx.fillStyle = isDark ? 'rgba(226, 232, 240, 0.50)' : 'rgba(51, 65, 85, 0.55)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(bridge.nameVi.split(' (')[0], midX, midY);
+
+      ctx.restore();
+    }
+  }
+
+  // 5. Draw District Labels (Muted, elegant, low-contrast cartographic background)
+  if (options.districts && options.districts.length > 0) {
+    ctx.save();
+    ctx.font = '800 10.5px sans-serif';
+    ctx.fillStyle = isDark ? 'rgba(148, 163, 184, 0.16)' : 'rgba(100, 116, 139, 0.15)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const d of options.districts) {
+      ctx.fillText(d.nameVi, d.x, d.y);
+    }
+    ctx.restore();
+  }
+
+  // 6. Draw Cultural & Heritage Landmarks (Small discrete badges)
+  if (options.landmarks && options.landmarks.length > 0) {
+    ctx.save();
+    for (const lm of options.landmarks) {
+      // Discrete landmark marker dot
+      ctx.beginPath();
+      ctx.arc(lm.x, lm.y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = isDark ? 'rgba(251, 191, 36, 0.40)' : 'rgba(217, 119, 6, 0.40)';
+      ctx.fill();
+
+      // Tiny badge label
+      if (lm.badgeText || lm.nameVi) {
+        ctx.font = '500 8px sans-serif';
+        ctx.fillStyle = isDark ? 'rgba(203, 213, 225, 0.35)' : 'rgba(100, 116, 139, 0.40)';
+        ctx.textAlign = 'center';
+        ctx.fillText(lm.badgeText || lm.nameVi.split(' — ')[0], lm.x, lm.y + 8);
+      }
+    }
     ctx.restore();
   }
 
@@ -228,7 +525,7 @@ export function renderScene(
     const idx = lineList.indexOf(lineId);
     if (idx === -1) return { x: 0, y: 0 };
 
-    const spacing = 11;
+    const spacing = 9.5;
     const offsetDist = (idx - (total - 1) / 2) * spacing;
 
     const canonicalA = st1.id < st2.id ? st1 : st2;
@@ -311,18 +608,17 @@ export function renderScene(
       segments.push({ polyline: poly, uId, vId });
       renderPolylines.push(segPts);
 
-      // Smooth bridge curve through station platform between consecutive corridors
+      // Direct smooth platform bridge preserving line's assigned parallel corridor offset
       if (segments.length > 1) {
         const prevPolyPts = segments[segments.length - 2].polyline.points;
         const prevEndPt = prevPolyPts[prevPolyPts.length - 1];
         if (distance(prevEndPt, pA) > 0.5) {
-          const bridgePts = sampleQuadraticBezier(prevEndPt, { x: s1.x, y: s1.y }, pA, 6);
-          renderPolylines.push(bridgePts);
+          renderPolylines.push([prevEndPt, pA]);
         }
       }
     }
 
-    // Connect loop closure at origin station
+    // Connect loop closure at origin station preserving parallel offset
     if (line.isLoop && segments.length > 2) {
       const lastPolyPts = segments[segments.length - 1].polyline.points;
       const firstPolyPts = segments[0].polyline.points;
@@ -330,8 +626,7 @@ export function renderScene(
       const firstStartPt = firstPolyPts[0];
       const s0 = stationMap.get(sIds[0]);
       if (s0 && distance(lastEndPt, firstStartPt) > 0.5) {
-        const bridgePts = sampleQuadraticBezier(lastEndPt, { x: s0.x, y: s0.y }, firstStartPt, 6);
-        renderPolylines.push(bridgePts);
+        renderPolylines.push([lastEndPt, firstStartPt]);
       }
     }
 
@@ -353,16 +648,15 @@ export function renderScene(
     });
   });
 
-  // 1. Draw Metro Track Lines (Underlay Casing + Vibrant Color)
-  lines.forEach(line => {
+  // Track, Train, and Station rendering helpers for selective layer ordering & focus mode
+  const drawSingleTrack = (line: MetroLine, isSelected: boolean) => {
     const geom = lineGeometries.get(line.id);
     if (!geom || geom.renderPolylines.length === 0) return;
-    const isSelected = options.selectedLineId === line.id;
 
     // A. Outer contrast casing (makes lines pop sharply against rivers & background)
     ctx.save();
     ctx.strokeStyle = isDark ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.85)';
-    ctx.lineWidth = isSelected ? 11 : 9;
+    ctx.lineWidth = isSelected ? 9.5 : 8;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
@@ -377,17 +671,12 @@ export function renderScene(
     }
     ctx.restore();
 
-    // B. Main vibrant transit line
+    // B. Main vibrant transit line (Solid, crisp color without glow)
     ctx.save();
     ctx.strokeStyle = line.color;
-    ctx.lineWidth = isSelected ? 8 : 6.5;
+    ctx.lineWidth = isSelected ? 7 : 6;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-
-    if (isSelected) {
-      ctx.shadowColor = line.color;
-      ctx.shadowBlur = 14;
-    }
 
     for (const pts of geom.renderPolylines) {
       if (pts.length < 2) continue;
@@ -409,53 +698,54 @@ export function renderScene(
     }
 
     ctx.restore();
-  });
+  };
 
-  // 2. Drag Route Creation Preview (Live smooth curve / octolinear guide)
-  if (options.dragState && options.dragState.isDragging && options.dragState.fromStationId && options.dragState.currentPos) {
-    const fromStation = stationMap.get(options.dragState.fromStationId);
-    if (fromStation) {
-      const targetStation = options.dragState.targetStationId ? stationMap.get(options.dragState.targetStationId) : null;
-      const toPos = targetStation ? { x: targetStation.x, y: targetStation.y } : options.dragState.currentPos;
-      const activeLine = lines.find(l => l.id === options.dragState?.lineId);
-      const dragColor = activeLine ? activeLine.color : '#3B82F6';
+  const drawDragPreview = () => {
+    if (options.dragState && options.dragState.isDragging && options.dragState.fromStationId && options.dragState.currentPos) {
+      const fromStation = stationMap.get(options.dragState.fromStationId);
+      if (fromStation) {
+        const targetStation = options.dragState.targetStationId ? stationMap.get(options.dragState.targetStationId) : null;
+        const toPos = targetStation ? { x: targetStation.x, y: targetStation.y } : options.dragState.currentPos;
+        const activeLine = lines.find(l => l.id === options.dragState?.lineId);
+        const dragColor = activeLine ? activeLine.color : '#3B82F6';
 
-      const previewPts = generateTrackSegmentPoints(fromStation, toPos, trackStyle);
+        const previewPts = generateTrackSegmentPoints(fromStation, toPos, trackStyle);
 
-      ctx.save();
-      // Outer glow
-      ctx.strokeStyle = dragColor;
-      ctx.lineWidth = 5.5;
-      ctx.setLineDash([10, 6]);
-      ctx.beginPath();
-      if (previewPts.length > 0) {
-        ctx.moveTo(previewPts[0].x, previewPts[0].y);
-        for (let k = 1; k < previewPts.length; k++) {
-          ctx.lineTo(previewPts[k].x, previewPts[k].y);
+        ctx.save();
+        // Outer glow
+        ctx.strokeStyle = dragColor;
+        ctx.lineWidth = 5.5;
+        ctx.setLineDash([10, 6]);
+        ctx.beginPath();
+        if (previewPts.length > 0) {
+          ctx.moveTo(previewPts[0].x, previewPts[0].y);
+          for (let k = 1; k < previewPts.length; k++) {
+            ctx.lineTo(previewPts[k].x, previewPts[k].y);
+          }
         }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Magnet handle
+        ctx.fillStyle = dragColor;
+        ctx.beginPath();
+        ctx.arc(toPos.x, toPos.y, targetStation ? 16 : 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.restore();
       }
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Magnet handle
-      ctx.fillStyle = dragColor;
-      ctx.beginPath();
-      ctx.arc(toPos.x, toPos.y, targetStation ? 16 : 8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-      ctx.restore();
     }
-  }
+  };
 
-  // 3. Draw High-End Metro Trains with Realistic Multi-Car Track Following & Articulated Coupling
   const carLength = 30;
   const carWidth = 15;
   const gap = 5;
   const carSpacing = carLength + gap;
+  const renderedTrainsList: RenderedTrainInfo[] = [];
 
-  trains.forEach(train => {
+  const drawSingleTrain = (train: Train) => {
     const line = lines.find(l => l.id === train.lineId);
     if (!line || line.stationIds.length < 2) return;
 
@@ -468,8 +758,6 @@ export function renderScene(
     const segPoly = currSeg.polyline;
     const segLen = Math.max(1, segPoly.totalLength);
 
-    // Endpoints in travel direction
-    // Train progress 0..1 along current segment polyline
     const leadDist = train.direction === 1
       ? train.progress * segLen
       : (1 - train.progress) * segLen;
@@ -482,7 +770,6 @@ export function renderScene(
     }
     const carTransforms: CarTransform[] = [];
 
-    // Calculate realistic track position for lead locomotive and every carriage
     for (let c = 0; c < totalCars; c++) {
       const carDistBehindLead = c * carSpacing;
       const targetDist = train.direction === 1
@@ -490,7 +777,6 @@ export function renderScene(
         : leadDist + carDistBehindLead;
 
       if (targetDist >= 0 && targetDist <= segLen) {
-        // Car is on the current segment
         const sampled = samplePolylineAtDistance(segPoly, targetDist);
         const angle = train.direction === 1 ? sampled.angle : sampled.angle + Math.PI;
         carTransforms.push({
@@ -499,7 +785,6 @@ export function renderScene(
           angle
         });
       } else {
-        // Car extends backwards onto previous segment(s) along the line's railway track
         let remDist = targetDist < 0 ? -targetDist : targetDist - segLen;
         let scanSeg = segIdx;
         let found = false;
@@ -512,9 +797,7 @@ export function renderScene(
             prevSeg = line.isLoop ? (scanSeg + 1) % totalSegments : scanSeg + 1;
           }
 
-          // If at terminus (no previous segment on non-loop line)
           if (prevSeg < 0 || prevSeg >= totalSegments) {
-            // Keep carriage safely on the track anchored at terminus
             const clampedDist = train.direction === 1 ? 0 : segLen;
             const sampled = samplePolylineAtDistance(segPoly, clampedDist);
             const angle = train.direction === 1 ? sampled.angle : sampled.angle + Math.PI;
@@ -561,7 +844,12 @@ export function renderScene(
 
     if (carTransforms.length === 0) return;
 
-    // Draw articulated metallic couplings between adjacent carriages
+    renderedTrainsList.push({
+      trainId: train.id,
+      lineId: train.lineId,
+      cars: carTransforms.map(ct => ({ x: ct.x, y: ct.y }))
+    });
+
     for (let c = 1; c < carTransforms.length; c++) {
       const prevCar = carTransforms[c - 1];
       const currCar = carTransforms[c];
@@ -571,83 +859,65 @@ export function renderScene(
       const currFrontX = currCar.x + Math.cos(currCar.angle) * (carLength / 2);
       const currFrontY = currCar.y + Math.sin(currCar.angle) * (carLength / 2);
 
-      ctx.strokeStyle = '#334155';
-      ctx.lineWidth = 4;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(prevRearX, prevRearY);
-      ctx.lineTo(currFrontX, currFrontY);
-      ctx.stroke();
-
       ctx.strokeStyle = '#0F172A';
-      ctx.lineWidth = 1.8;
+      ctx.lineWidth = 3.2;
+      ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(prevRearX, prevRearY);
       ctx.lineTo(currFrontX, currFrontY);
       ctx.stroke();
     }
 
-    // Draw each car individually oriented and aligned along the track
+    if (isNight && carTransforms.length > 0) {
+      const lead = carTransforms[0];
+      ctx.save();
+      ctx.translate(lead.x, lead.y);
+      ctx.rotate(lead.angle);
+      const beam = ctx.createLinearGradient(carLength / 2, 0, carLength / 2 + 24, 0);
+      beam.addColorStop(0, 'rgba(255, 255, 255, 0.30)');
+      beam.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = beam;
+      ctx.beginPath();
+      ctx.moveTo(carLength / 2, 0);
+      ctx.lineTo(carLength / 2 + 24, -8);
+      ctx.lineTo(carLength / 2 + 24, 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
     carTransforms.forEach((car, c) => {
       ctx.save();
       ctx.translate(car.x, car.y);
       ctx.rotate(car.angle);
 
-      // Car body drop shadow
-      ctx.shadowColor = 'rgba(0,0,0,0.3)';
-      ctx.shadowBlur = 6;
-      ctx.shadowOffsetY = 2;
-
-      // Outer car shell (Pure crisp white with clean metallic border)
       ctx.fillStyle = '#FFFFFF';
       ctx.beginPath();
-      ctx.roundRect(-carLength / 2, -carWidth / 2, carLength, carWidth, 4);
+      ctx.roundRect(-carLength / 2, -carWidth / 2, carLength, carWidth, 3.5);
       ctx.fill();
 
-      ctx.shadowColor = 'transparent';
-      ctx.shadowBlur = 0;
-
-      // Dark rim border
-      ctx.strokeStyle = '#1E293B';
-      ctx.lineWidth = 1.8;
+      ctx.strokeStyle = '#0F172A';
+      ctx.lineWidth = 1.6;
       ctx.stroke();
 
-      // Bold accent stripe in metro line color
       ctx.fillStyle = line.color;
       ctx.beginPath();
-      ctx.roundRect(-carLength / 2 + 3, -carWidth / 2 + 2.5, carLength - 6, 3, 1);
+      ctx.roundRect(-carLength / 2 + 3, -carWidth / 2 + 2, carLength - 6, 3.2, 1);
       ctx.fill();
 
-      // Front locomotive cab details
       if (c === 0) {
-        // Headlight soft ambient light cone
-        const beamGrad = ctx.createRadialGradient(carLength / 2, 0, 4, carLength / 2 + 25, 0, 35);
-        beamGrad.addColorStop(0, 'rgba(254, 240, 138, 0.45)');
-        beamGrad.addColorStop(1, 'rgba(254, 240, 138, 0)');
-        ctx.fillStyle = beamGrad;
-        ctx.beginPath();
-        ctx.moveTo(carLength / 2, -3);
-        ctx.lineTo(carLength / 2 + 35, -16);
-        ctx.lineTo(carLength / 2 + 35, 16);
-        ctx.lineTo(carLength / 2, 3);
-        ctx.closePath();
-        ctx.fill();
-
-        // Windshield glass
         ctx.fillStyle = '#0F172A';
         ctx.beginPath();
-        ctx.roundRect(carLength / 2 - 6, -4, 4.5, 8, 1.5);
+        ctx.roundRect(carLength / 2 - 5, -3.5, 3.5, 7, 1);
         ctx.fill();
 
-        // Dual luminous headlights
         ctx.fillStyle = '#FEF08A';
         ctx.beginPath();
-        ctx.arc(carLength / 2 - 1, -4.5, 1.6, 0, Math.PI * 2);
-        ctx.arc(carLength / 2 - 1, 4.5, 1.6, 0, Math.PI * 2);
+        ctx.arc(carLength / 2 - 1, -3.5, 1.5, 0, Math.PI * 2);
+        ctx.arc(carLength / 2 - 1, 3.5, 1.5, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Commuters riding inside carriage
       const passengersPerCar = 4;
       const startPassengerIdx = c * passengersPerCar;
       const endPassengerIdx = Math.min(train.passengers.length, startPassengerIdx + passengersPerCar);
@@ -655,22 +925,75 @@ export function renderScene(
       for (let pIdx = startPassengerIdx; pIdx < endPassengerIdx; pIdx++) {
         const passenger = train.passengers[pIdx];
         const localPIdx = pIdx - startPassengerIdx;
-        const px = -carLength / 2 + 6 + localPIdx * 5.8;
-        const py = 2.5;
-        drawShape(ctx, passenger.targetShape, px, py, 2.3, line.color, '#0F172A', 0.8);
+        const px = -carLength / 2 + 5.5 + localPIdx * 5.2;
+        const py = 2.2;
+        drawShape(ctx, passenger.targetShape, px, py, 2.2, line.color, '#0F172A', 0.8);
       }
 
       ctx.restore();
     });
-  });
 
-  // 4. Draw Stations with High-Precision Geometry & Dual Overcrowd Progress Gauges
-  stations.forEach(station => {
+    if (
+      options.inspectorState &&
+      options.inspectorState.status === 'patrolling' &&
+      options.inspectorState.currentTrainId === train.id &&
+      carTransforms.length > 0
+    ) {
+      const lead = carTransforms[0];
+      const bob = Math.sin(now * 5.5) * 3;
+      ctx.save();
+      ctx.translate(lead.x, lead.y - 20 + bob);
+
+      ctx.beginPath();
+      ctx.arc(0, 0, 15, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.28)';
+      ctx.fill();
+
+      ctx.fillStyle = '#F59E0B';
+      ctx.beginPath();
+      ctx.arc(0, 0, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('👮', 0, 1);
+
+      ctx.fillStyle = '#0F172A';
+      ctx.beginPath();
+      ctx.roundRect(-24, -18, 48, 12, 3);
+      ctx.fill();
+      ctx.strokeStyle = '#F59E0B';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#FCD34D';
+      ctx.font = 'bold 7.5px sans-serif';
+      ctx.fillText('THANH TRA', 0, -11.5);
+
+      ctx.restore();
+    }
+  };
+
+  const drawSingleStation = (station: Station) => {
     const isHovered = options.hoveredStationId === station.id;
     const isSelected = options.selectedStationId === station.id;
     const baseRadius = station.isInterchange ? 20 : 15;
 
     ctx.save();
+
+    // Night station warm radial ambient glow
+    if (isNight) {
+      const glow = ctx.createRadialGradient(station.x, station.y, 2, station.x, station.y, baseRadius + 14);
+      glow.addColorStop(0, 'rgba(254, 240, 138, 0.16)');
+      glow.addColorStop(1, 'rgba(254, 240, 138, 0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(station.x, station.y, baseRadius + 14, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // Selected Station beacon / glowing double ring
     if (isSelected) {
@@ -694,6 +1017,39 @@ export function renderScene(
       ctx.fill();
     }
 
+    // Flooded station water puddle & ripple wave effect
+    if (station.isFlooded) {
+      const nowTs = performance.now() / 1000;
+      const ripple1 = baseRadius + 14 + (Math.sin(nowTs * 3.5) + 1) * 4;
+      const ripple2 = baseRadius + 22 + (Math.cos(nowTs * 2.8) + 1) * 6;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(station.x, station.y, ripple2, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(station.x, station.y, ripple1, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(14, 165, 233, 0.25)';
+      ctx.fill();
+      ctx.strokeStyle = '#0284C7';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.fillStyle = '#0284C7';
+      ctx.beginPath();
+      ctx.roundRect(station.x - 24, station.y - baseRadius - 28, 48, 16, 4);
+      ctx.fill();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = 'bold 9px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🌊 NGẬP', station.x, station.y - baseRadius - 20);
+      ctx.restore();
+    }
+
     // Interchange Hub double ring & amber star badge
     if (station.isInterchange) {
       ctx.beginPath();
@@ -707,96 +1063,95 @@ export function renderScene(
     }
 
     // Dual-Stage Circular Progress Gauges:
-    // 1. Early-warning Passenger Occupancy Ring (Visible whenever passengers are waiting)
-    const passengerCount = station.passengers.length;
-    const maxCap = station.maxCapacity;
-    const occupancy = Math.min(1.0, passengerCount / maxCap);
-    const gaugeRadius = baseRadius + 6;
+    // When hideStationIcons is toggled, also hide the occupancy ring and the red circular overcrowding indicators
+    if (!options.hideStationIcons) {
+      const passengerCount = station.passengers.length;
+      const maxCap = station.maxCapacity;
+      const occupancy = Math.min(1.0, passengerCount / maxCap);
+      const gaugeRadius = baseRadius + 6;
 
-    if (passengerCount > 0) {
-      // Subtle background ring track
-      ctx.beginPath();
-      ctx.arc(station.x, station.y, gaugeRadius, 0, Math.PI * 2);
-      ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.1)';
-      ctx.lineWidth = 3.5;
-      ctx.stroke();
-
-      // Progress Arc: 12 o'clock (-Math.PI/2) filling clockwise
-      const startAngle = -Math.PI / 2;
-      const endAngle = startAngle + Math.PI * 2 * occupancy;
-
-      let arcColor = '#10B981'; // Green: healthy capacity (< 60%)
-      if (occupancy >= 0.85) {
-        arcColor = '#EF4444'; // Red: near or at capacity (>= 85%)
-      } else if (occupancy >= 0.6) {
-        arcColor = '#F59E0B'; // Amber: moderate load (60% - 85%)
-      }
-
-      ctx.beginPath();
-      ctx.arc(station.x, station.y, gaugeRadius, startAngle, endAngle);
-      ctx.strokeStyle = arcColor;
-      ctx.lineWidth = 3.5;
-      ctx.lineCap = 'round';
-      ctx.stroke();
-    }
-
-    // 2. Critical Overcrowding Countdown Ring (Mini Metro game-over timer)
-    if (station.overcrowdedTimer > 0.02 || station.isOvercrowded) {
-      const dangerRadius = baseRadius + 11.5;
-      const timerProgress = Math.min(1.0, Math.max(0.05, station.overcrowdedTimer));
-      const isUrgent = station.overcrowdedTimer > 0.65;
-
-      // Danger track ring
-      ctx.beginPath();
-      ctx.arc(station.x, station.y, dangerRadius, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(239, 68, 68, 0.25)';
-      ctx.lineWidth = 4;
-      ctx.stroke();
-
-      // Urgent countdown arc filling to 100%
-      ctx.beginPath();
-      ctx.arc(
-        station.x,
-        station.y,
-        dangerRadius,
-        -Math.PI / 2,
-        -Math.PI / 2 + Math.PI * 2 * timerProgress
-      );
-      ctx.strokeStyle = '#EF4444';
-      ctx.lineWidth = 4.5;
-      ctx.lineCap = 'round';
-      ctx.stroke();
-
-      // Pulsing alert ring when close to failure
-      if (isUrgent) {
-        const pulse = 1 + Math.sin(Date.now() / 120) * 0.15;
+      // 1. Early-warning Passenger Occupancy Ring (Visible whenever passengers are waiting)
+      if (!options.hidePassengerCount && passengerCount > 0) {
         ctx.beginPath();
-        ctx.arc(station.x, station.y, dangerRadius * pulse, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)';
-        ctx.lineWidth = 2.5;
+        ctx.arc(station.x, station.y, gaugeRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.1)';
+        ctx.lineWidth = 3.5;
+        ctx.stroke();
+
+        const startAngle = -Math.PI / 2;
+        const endAngle = startAngle + Math.PI * 2 * occupancy;
+
+        let arcColor = '#10B981';
+        if (occupancy >= 0.85) {
+          arcColor = '#EF4444';
+        } else if (occupancy >= 0.6) {
+          arcColor = '#F59E0B';
+        }
+
+        ctx.beginPath();
+        ctx.arc(station.x, station.y, gaugeRadius, startAngle, endAngle);
+        ctx.strokeStyle = arcColor;
+        ctx.lineWidth = 3.5;
+        ctx.lineCap = 'round';
         ctx.stroke();
       }
 
-      // Overload Danger Badge above station (shows current load vs max capacity)
-      const badgeY = station.y - baseRadius - 14;
-      const badgeText = `${passengerCount}/${maxCap}`;
+      // 2. Critical Overcrowding Countdown Ring (Mini Metro game-over timer)
+      if (station.overcrowdedTimer > 0.02 || station.isOvercrowded) {
+        const dangerRadius = baseRadius + 11.5;
+        const timerProgress = Math.min(1.0, Math.max(0.05, station.overcrowdedTimer));
+        const isUrgent = station.overcrowdedTimer > 0.65;
 
-      ctx.font = '800 10px "JetBrains Mono", monospace';
-      const badgeW = ctx.measureText(badgeText).width + 10;
+        ctx.beginPath();
+        ctx.arc(station.x, station.y, dangerRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.25)';
+        ctx.lineWidth = 4;
+        ctx.stroke();
 
-      ctx.fillStyle = '#EF4444';
-      ctx.beginPath();
-      ctx.roundRect(station.x - badgeW / 2, badgeY - 7, badgeW, 14, 7);
-      ctx.fill();
+        ctx.beginPath();
+        ctx.arc(
+          station.x,
+          station.y,
+          dangerRadius,
+          -Math.PI / 2,
+          -Math.PI / 2 + Math.PI * 2 * timerProgress
+        );
+        ctx.strokeStyle = '#EF4444';
+        ctx.lineWidth = 4.5;
+        ctx.lineCap = 'round';
+        ctx.stroke();
 
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
+        if (isUrgent) {
+          const pulse = 1 + Math.sin(Date.now() / 120) * 0.15;
+          ctx.beginPath();
+          ctx.arc(station.x, station.y, dangerRadius * pulse, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)';
+          ctx.lineWidth = 2.5;
+          ctx.stroke();
+        }
 
-      ctx.fillStyle = '#FFFFFF';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(badgeText, station.x, badgeY);
+        if (!options.hidePassengerCount) {
+          const badgeY = station.y - baseRadius - 14;
+          const badgeText = `${passengerCount}/${maxCap}`;
+
+          ctx.font = '800 10px "JetBrains Mono", monospace';
+          const badgeW = ctx.measureText(badgeText).width + 10;
+
+          ctx.fillStyle = '#EF4444';
+          ctx.beginPath();
+          ctx.roundRect(station.x - badgeW / 2, badgeY - 7, badgeW, 14, 7);
+          ctx.fill();
+
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+
+          ctx.fillStyle = '#FFFFFF';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(badgeText, station.x, badgeY);
+        }
+      }
     }
 
     // Station Drop Shadow
@@ -804,17 +1159,27 @@ export function renderScene(
     ctx.shadowBlur = 8;
     ctx.shadowOffsetY = 3;
 
-    // Station Main Geometry
-    drawShape(
-      ctx,
-      station.shape,
-      station.x,
-      station.y,
-      baseRadius,
-      stationFillColor,
-      stationBorderColor,
-      station.isInterchange ? 4.5 : 3.8
-    );
+    // Station Main Geometry: If hideStationIcons is true, render a clean circular stop marker
+    if (options.hideStationIcons) {
+      ctx.beginPath();
+      ctx.arc(station.x, station.y, station.isInterchange ? 13 : 9.5, 0, Math.PI * 2);
+      ctx.fillStyle = stationFillColor;
+      ctx.fill();
+      ctx.strokeStyle = stationBorderColor;
+      ctx.lineWidth = station.isInterchange ? 4.2 : 3.2;
+      ctx.stroke();
+    } else {
+      drawShape(
+        ctx,
+        station.shape,
+        station.x,
+        station.y,
+        baseRadius,
+        stationFillColor,
+        stationBorderColor,
+        station.isInterchange ? 4.5 : 3.8
+      );
+    }
 
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
@@ -833,13 +1198,11 @@ export function renderScene(
       }
       const tagY = station.y + baseRadius + 7;
 
-      // Backdrop pill
       ctx.fillStyle = isDark ? 'rgba(15, 23, 42, 0.88)' : 'rgba(255, 255, 255, 0.94)';
       ctx.beginPath();
       ctx.roundRect(station.x - textW / 2, tagY - 2, textW, 18, 5);
       ctx.fill();
 
-      // Pill border
       ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.1)';
       ctx.lineWidth = 1;
       ctx.stroke();
@@ -848,8 +1211,8 @@ export function renderScene(
       ctx.fillText(name, station.x, tagY);
     }
 
-    // Waiting Passengers
-    if (station.passengers.length > 0) {
+    // Waiting Passengers (hidden if hidePassengerCount is enabled)
+    if (!options.hidePassengerCount && station.passengers.length > 0) {
       const pSize = 4.2;
       const pSpacing = 12;
       const maxCols = 4;
@@ -875,8 +1238,176 @@ export function renderScene(
       });
     }
 
+    // --- Metro Line Inspector Visual Highlights on Station ---
+    const insp = options.inspectorState;
+    if (insp) {
+      if (insp.visitedStationIds && insp.visitedStationIds.includes(station.id)) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(station.x, station.y, baseRadius + 7.5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#10B981';
+        ctx.lineWidth = 2.6;
+        ctx.stroke();
+
+        const badgeX = station.x + baseRadius + 4;
+        const badgeY = station.y - baseRadius - 2;
+        ctx.beginPath();
+        ctx.arc(badgeX, badgeY, 6.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#10B981';
+        ctx.fill();
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = 'bold 8px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('✓', badgeX, badgeY);
+        ctx.restore();
+      }
+
+      // Planned Station route indicator (dashed amber target ring)
+      if (
+        insp.status === 'patrolling' &&
+        insp.plannedStationIds &&
+        insp.plannedStationIds.includes(station.id) &&
+        (!insp.visitedStationIds || !insp.visitedStationIds.includes(station.id))
+      ) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(station.x, station.y, baseRadius + 7.5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.65)';
+        ctx.lineWidth = 1.8;
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      if (insp.status === 'selecting_station') {
+        const pulse = 1 + Math.sin(now * 5) * 0.12;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(station.x, station.y, (baseRadius + 11) * pulse, 0, Math.PI * 2);
+        ctx.strokeStyle = isHovered ? '#F59E0B' : 'rgba(245, 158, 11, 0.45)';
+        ctx.lineWidth = isHovered ? 3.5 : 2.0;
+        if (!isHovered) {
+          ctx.setLineDash([6, 4]);
+        }
+        ctx.stroke();
+
+        if (isHovered) {
+          ctx.fillStyle = '#F59E0B';
+          ctx.beginPath();
+          ctx.roundRect(station.x - 45, station.y - baseRadius - 26, 90, 18, 4);
+          ctx.fill();
+          ctx.fillStyle = '#0F172A';
+          ctx.font = 'bold 9.5px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('👮 CHỌN XUẤT PHÁT', station.x, station.y - baseRadius - 17);
+        }
+        ctx.restore();
+      }
+
+      if (
+        insp.status === 'patrolling' &&
+        insp.currentStationId === station.id &&
+        !insp.currentTrainId
+      ) {
+        const isInspecting = !!(insp.dwellAtStationTimer && insp.dwellAtStationTimer > 0);
+        const bob = Math.sin(now * 5) * 3;
+        ctx.save();
+        ctx.translate(station.x, station.y - baseRadius - 22 + bob);
+
+        ctx.beginPath();
+        ctx.arc(0, 0, 16, 0, Math.PI * 2);
+        ctx.fillStyle = isInspecting ? 'rgba(16, 185, 129, 0.25)' : 'rgba(245, 158, 11, 0.25)';
+        ctx.fill();
+
+        ctx.fillStyle = isInspecting ? '#10B981' : '#F59E0B';
+        ctx.beginPath();
+        ctx.arc(0, 0, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('👮', 0, 1);
+
+        const badgeText = isInspecting ? 'KIỂM TRA GA' : 'CHỜ TÀU KẾ';
+        ctx.fillStyle = '#0F172A';
+        ctx.beginPath();
+        ctx.roundRect(-36, -18, 72, 14, 4);
+        ctx.fill();
+        ctx.strokeStyle = isInspecting ? '#10B981' : '#F59E0B';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.fillStyle = isInspecting ? '#6EE7B7' : '#FCD34D';
+        ctx.font = 'bold 8px sans-serif';
+        ctx.fillText(badgeText, 0, -10.5);
+
+        ctx.restore();
+      }
+    }
+
     ctx.restore();
-  });
+  };
+
+  // Focus Mode Check: when a line is chosen or actively being drawn, darken map by 50%
+  // except for the chosen line's stations, railway track, and trains.
+  const isDragging = Boolean(options.dragState && options.dragState.isDragging);
+  const activeLineId = (options.dragState && options.dragState.isDragging && options.dragState.lineId)
+    || options.selectedLineId
+    || null;
+  const activeLine = activeLineId ? lines.find(l => l.id === activeLineId) : null;
+  const isFocusMode = Boolean(activeLine || isDragging);
+
+  const activeStationIds = new Set<string>();
+  if (activeLine) {
+    activeLine.stationIds.forEach(id => activeStationIds.add(id));
+  }
+  if (options.dragState && options.dragState.isDragging) {
+    if (options.dragState.fromStationId) activeStationIds.add(options.dragState.fromStationId);
+    if (options.dragState.targetStationId) activeStationIds.add(options.dragState.targetStationId);
+  }
+  if (isDragging && options.hoveredStationId) {
+    activeStationIds.add(options.hoveredStationId);
+  }
+
+  if (isFocusMode) {
+    // 1. Draw inactive lines, trains, and stations behind the 50% dark veil
+    lines.filter(l => l.id !== activeLineId).forEach(line => drawSingleTrack(line, false));
+    trains.filter(t => t.lineId !== activeLineId).forEach(train => drawSingleTrain(train));
+    stations.filter(s => !activeStationIds.has(s.id)).forEach(station => drawSingleStation(station));
+
+    // 2. Darken entire map by 50%
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.50)';
+    ctx.fillRect(-6000, -6000, width + 12000, height + 12000);
+    ctx.restore();
+
+    // 3. Draw active line track, route drag preview, active trains, and active stations at 100% full vibrant brightness
+    if (activeLine) {
+      drawSingleTrack(activeLine, true);
+    }
+    drawDragPreview();
+    if (activeLineId) {
+      trains.filter(t => t.lineId === activeLineId).forEach(train => drawSingleTrain(train));
+    }
+    stations.filter(s => activeStationIds.has(s.id)).forEach(station => drawSingleStation(station));
+  } else {
+    // Normal rendering
+    lines.forEach(line => drawSingleTrack(line, options.selectedLineId === line.id));
+    drawDragPreview();
+    trains.forEach(train => drawSingleTrain(train));
+    stations.forEach(station => drawSingleStation(station));
+  }
+
+  lastRenderedTrains = renderedTrainsList;
 
   // 5. Draw Floating Money / Reward Pings
   floatingTexts.forEach(ft => {
@@ -890,4 +1421,57 @@ export function renderScene(
     ctx.fillText(ft.text, ft.x, ft.y);
     ctx.restore();
   });
+
+  // 6. Draw Weather Overlays (slanted rain streaks & atmospheric storm mist)
+  if (options.weather && options.weather.rainIntensity > 0) {
+    const intensity = options.weather.rainIntensity;
+    const now = performance.now() / 1000;
+    const dropCount = Math.floor(intensity * 140);
+    ctx.save();
+    ctx.strokeStyle = isDark ? 'rgba(186, 230, 253, 0.42)' : 'rgba(56, 189, 248, 0.5)';
+    ctx.lineWidth = options.weather.current === 'storm' ? 1.6 : 1.2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    const slant = 18;
+    const dropLength = 24 * intensity;
+    for (let i = 0; i < dropCount; i++) {
+      const seed = i * 997.3;
+      const speed = 780 + (i % 5) * 110;
+      const startX = ((seed * 13.7 + now * 140) % (width + 300)) - 150;
+      const startY = ((seed * 29.1 + now * speed) % (height + 150)) - 75;
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(startX - slant * 0.4, startY + dropLength);
+    }
+    ctx.stroke();
+
+    // Ambient mood tint during storm / flood
+    if (options.weather.current === 'storm' || options.weather.current === 'flooded') {
+      ctx.fillStyle = isDark ? 'rgba(15, 23, 42, 0.12)' : 'rgba(30, 41, 59, 0.08)';
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.restore();
+  }
+
+  // 7. Day / Night Ambient Atmospheric Lighting (Subtle, non-distracting)
+  if (timeHours >= 16.5 && timeHours < 18.5) {
+    // Golden Hour Dusk: subtle warm amber tint
+    const duskIntensity = (timeHours - 16.5) / 2.0;
+    ctx.save();
+    ctx.fillStyle = `rgba(245, 158, 11, ${0.02 + duskIntensity * 0.03})`;
+    ctx.fillRect(-1000, -1000, width + 2000, height + 2000);
+    ctx.restore();
+  } else if (timeHours >= 18.5 || timeHours <= 5.0) {
+    // Night Atmosphere: very soft indigo/navy tint
+    ctx.save();
+    ctx.fillStyle = isDark ? 'rgba(15, 23, 42, 0.10)' : 'rgba(30, 41, 59, 0.06)';
+    ctx.fillRect(-1000, -1000, width + 2000, height + 2000);
+    ctx.restore();
+  } else if (timeHours > 5.0 && timeHours < 6.5) {
+    // Dawn / Twilight: soft rose-gold tint
+    ctx.save();
+    ctx.fillStyle = 'rgba(244, 114, 182, 0.03)';
+    ctx.fillRect(-1000, -1000, width + 2000, height + 2000);
+    ctx.restore();
+  }
 }
+

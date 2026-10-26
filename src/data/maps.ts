@@ -1,71 +1,8 @@
 import { CityMapConfig } from '../types/game';
+import { HANOI_DETAILED_MAP } from './hanoiDetailedMap';
 
 export const CITY_MAPS: CityMapConfig[] = [
-  {
-    id: 'hanoi',
-    nameVi: 'Hà Nội',
-    nameEn: 'Hanoi',
-    descriptionVi: 'Mạng lưới qua Sông Hồng và quanh Hồ Tây. Thử thách cầu vượt sông giữa phố cổ và Gia Lâm.',
-    descriptionEn: 'Network across the Red River and around West Lake. Bridge challenges connecting Old Quarter and Long Bien.',
-    riverPolygons: [
-      // Sông Hồng (Winding river - generously scaled)
-      {
-        points: [
-          { x: 100, y: 0 },
-          { x: 220, y: 200 },
-          { x: 500, y: 380 },
-          { x: 820, y: 520 },
-          { x: 1150, y: 720 },
-          { x: 1380, y: 980 },
-          { x: 1440, y: 1200 },
-          // river width boundary
-          { x: 1540, y: 1200 },
-          { x: 1470, y: 940 },
-          { x: 1250, y: 670 },
-          { x: 910, y: 470 },
-          { x: 580, y: 330 },
-          { x: 290, y: 160 },
-          { x: 160, y: 0 },
-        ]
-      },
-      // Hồ Tây (West Lake water body)
-      {
-        isWaterBody: true,
-        points: [
-          { x: 420, y: 120 },
-          { x: 580, y: 130 },
-          { x: 650, y: 240 },
-          { x: 590, y: 340 },
-          { x: 470, y: 350 },
-          { x: 390, y: 260 },
-          { x: 380, y: 170 },
-        ]
-      }
-    ],
-    // Initial stations are spaced far apart (~350px-450px)
-    initialStations: [
-      { id: 'hn-1', shape: 'circle', x: 520, y: 520, name: 'Hoàn Kiếm' },
-      { id: 'hn-2', shape: 'triangle', x: 280, y: 560, name: 'Cầu Giấy' },
-      { id: 'hn-3', shape: 'square', x: 950, y: 360, name: 'Long Biên' },
-    ],
-    stationPool: [
-      { shape: 'circle', x: 640, y: 660, name: 'Hai Bà Trưng' },
-      { shape: 'triangle', x: 340, y: 380, name: 'Tây Hồ' },
-      { shape: 'diamond', x: 1100, y: 270, name: 'Gia Lâm' },
-      { shape: 'square', x: 440, y: 720, name: 'Đống Đa' },
-      { shape: 'cross', x: 740, y: 820, name: 'Hoàng Mai' },
-      { shape: 'star', x: 180, y: 740, name: 'Nam Từ Liêm' },
-      { shape: 'circle', x: 520, y: 370, name: 'Ba Đình' },
-      { shape: 'triangle', x: 1040, y: 580, name: 'Bồ Đề' },
-      { shape: 'diamond', x: 1260, y: 800, name: 'Bát Tràng' },
-      { shape: 'pentagon', x: 160, y: 490, name: 'Bắc Từ Liêm' },
-      { shape: 'square', x: 760, y: 340, name: 'Yên Phụ' },
-      { shape: 'circle', x: 360, y: 890, name: 'Thanh Xuân' },
-      { shape: 'triangle', x: 860, y: 710, name: 'Vĩnh Tuy' },
-      { shape: 'star', x: 660, y: 180, name: 'Nhật Tân' },
-      { shape: 'circle', x: 1220, y: 490, name: 'Sài Đồng' },
-    ]
-  },
+  HANOI_DETAILED_MAP,
   {
     id: 'saigon',
     nameVi: 'TP. Hồ Chí Minh',

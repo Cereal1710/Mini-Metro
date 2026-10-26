@@ -11,6 +11,9 @@ interface StationDetailModalProps {
   onClose: () => void;
   onUpgradeToInterchange: (stationId: string) => void;
   onRemoveStationFromLine?: (lineId: string, stationId: string) => void;
+  onChangeShape?: (stationId: string, shape: StationShape) => void;
+  onDeleteStation?: (stationId: string) => void;
+  onRequestDeleteStation?: (stationId: string, stationName: string) => void;
 }
 
 const SHAPE_NAMES: Record<StationShape, { vi: string; en: string }> = {
@@ -31,7 +34,10 @@ export const StationDetailModal: React.FC<StationDetailModalProps> = ({
   lang,
   onClose,
   onUpgradeToInterchange,
-  onRemoveStationFromLine
+  onRemoveStationFromLine,
+  onChangeShape,
+  onDeleteStation,
+  onRequestDeleteStation
 }) => {
   if (!station) return null;
   const isDark = theme === 'dark';
@@ -51,7 +57,7 @@ export const StationDetailModal: React.FC<StationDetailModalProps> = ({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className={`w-full max-w-md rounded-2xl p-6 border shadow-2xl relative cursor-default ${
+        className={`w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl p-4 sm:p-6 border shadow-2xl relative cursor-default ${
           isDark ? 'bg-neutral-900 border-neutral-800 text-neutral-100' : 'bg-white border-neutral-200 text-neutral-900'
         }`}
       >
@@ -89,6 +95,34 @@ export const StationDetailModal: React.FC<StationDetailModalProps> = ({
             <p className="text-xs opacity-60">
               {lang === 'vi' ? SHAPE_NAMES[station.shape].vi : SHAPE_NAMES[station.shape].en} • {lang === 'vi' ? 'Nhà ga trung tâm' : 'Transit station'}
             </p>
+
+            {/* Quick Shape Switcher */}
+            {onChangeShape && (
+              <div className="flex items-center gap-1 mt-2">
+                <span className="text-[10px] font-semibold opacity-60 mr-1">
+                  {lang === 'vi' ? 'Đổi dạng:' : 'Change:'}
+                </span>
+                {(['circle', 'triangle', 'square', 'diamond', 'star', 'cross', 'pentagon'] as StationShape[]).map(sh => (
+                  <button
+                    key={sh}
+                    onClick={() => onChangeShape(station.id, sh)}
+                    className={`w-6 h-6 rounded-md text-xs font-black flex items-center justify-center transition cursor-pointer ${
+                      station.shape === sh
+                        ? 'bg-emerald-600 text-white ring-2 ring-emerald-400'
+                        : isDark ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700' : 'bg-neutral-100 text-neutral-800 hover:bg-neutral-200'
+                    }`}
+                  >
+                    {sh === 'circle' && '●'}
+                    {sh === 'triangle' && '▲'}
+                    {sh === 'square' && '■'}
+                    {sh === 'diamond' && '◆'}
+                    {sh === 'star' && '★'}
+                    {sh === 'cross' && '✚'}
+                    {sh === 'pentagon' && '⬠'}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -239,9 +273,7 @@ export const StationDetailModal: React.FC<StationDetailModalProps> = ({
             >
               <Star className="w-4 h-4 fill-current" />
               <span>
-                {hasInterchangeToken
-                  ? (lang === 'vi' ? 'Nâng cấp Ga Trung Chuyển (Dùng 1 Thẻ Hub)' : 'Upgrade to Interchange Hub (Use Token)')
-                  : (lang === 'vi' ? 'Nâng cấp Ga Trung Chuyển ($350 - Sức chứa 14)' : 'Upgrade to Interchange Hub ($350 - 14 Capacity)')}
+                {lang === 'vi' ? 'Nâng cấp Ga Trung Chuyển ($350 - Sức chứa 14)' : 'Upgrade to Interchange Hub ($350 - 14 Capacity)'}
               </span>
             </button>
           </div>
@@ -249,6 +281,26 @@ export const StationDetailModal: React.FC<StationDetailModalProps> = ({
           <div className="w-full py-2.5 rounded-xl bg-amber-500/10 text-amber-500 border border-amber-500/30 text-xs font-bold text-center flex items-center justify-center gap-2">
             <CheckCircle2 className="w-4 h-4" />
             <span>{lang === 'vi' ? 'Đã là Ga Trung Chuyển tối ưu (Sức chứa 14 khách)' : 'Optimal Interchange Hub Active (14 Capacity)'}</span>
+          </div>
+        )}
+
+        {/* Delete Station Button */}
+        {(onDeleteStation || onRequestDeleteStation) && (
+          <div className="mt-3">
+            <button
+              onClick={() => {
+                if (onRequestDeleteStation) {
+                  onRequestDeleteStation(station.id, station.name);
+                } else if (onDeleteStation) {
+                  onDeleteStation(station.id);
+                  onClose();
+                }
+              }}
+              className="w-full py-2 px-3 rounded-xl border border-red-500/30 hover:bg-red-500/15 text-red-400 text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer active:scale-98"
+            >
+              <span>🗑️</span>
+              <span>{lang === 'vi' ? 'Xóa nhà ga này khỏi bản đồ' : 'Delete this Station'}</span>
+            </button>
           </div>
         )}
 

@@ -282,3 +282,30 @@ export function samplePolylineAtDistance(
 export function formatMoney(amount: number): string {
   return `$${amount.toLocaleString('en-US')}`;
 }
+
+export function computeLineColors(hex: string): { color: string; darkColor: string; textColor: string } {
+  let clean = hex.trim();
+  if (!clean.startsWith('#')) clean = '#' + clean;
+
+  let r = 239, g = 68, b = 68;
+  const raw = clean.replace('#', '');
+  if (raw.length === 3) {
+    r = parseInt(raw[0] + raw[0], 16) || 0;
+    g = parseInt(raw[1] + raw[1], 16) || 0;
+    b = parseInt(raw[2] + raw[2], 16) || 0;
+  } else if (raw.length === 6) {
+    r = parseInt(raw.substring(0, 2), 16) || 0;
+    g = parseInt(raw.substring(2, 4), 16) || 0;
+    b = parseInt(raw.substring(4, 6), 16) || 0;
+  }
+
+  const darkR = Math.max(0, Math.floor(r * 0.65)).toString(16).padStart(2, '0');
+  const darkG = Math.max(0, Math.floor(g * 0.65)).toString(16).padStart(2, '0');
+  const darkB = Math.max(0, Math.floor(b * 0.65)).toString(16).padStart(2, '0');
+  const darkColor = `#${darkR}${darkG}${darkB}`;
+
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  const textColor = lum > 0.65 ? '#0F172A' : '#FFFFFF';
+
+  return { color: clean, darkColor, textColor };
+}

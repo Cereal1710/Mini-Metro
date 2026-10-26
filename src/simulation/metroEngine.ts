@@ -8,8 +8,17 @@ import {
   GameStats,
   CityMapConfig,
   StationShape,
-  Passenger
+  Passenger,
+  StationData,
+  MetroLineType,
+  WeatherType,
+  WeatherState,
+  UrbanIncident,
+  CampaignScenario,
+  CampaignState,
+  InspectorState
 } from '../types/game';
+import { CAMPAIGN_SCENARIOS } from '../data/campaignScenarios';
 import { distance, segmentCrossesRiver } from '../utils/geometry';
 import { findNextTransitStep } from './pathfinding';
 import { soundEngine } from '../audio/soundEngine';
@@ -31,21 +40,57 @@ export interface SimulationState {
   pendingWeeklyReward: boolean;
   gameMode: GameMode;
   isRushHour: boolean;
+  weather: WeatherState;
+  activeIncident: UrbanIncident | null;
+  campaignState?: CampaignState | null;
+  inspectorState: InspectorState;
 }
 
 export const DAY_NAMES_VI = ['Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy', 'Chủ Nhật'];
 export const DAY_NAMES_EN = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+export function getLineSpeedMultiplier(type?: MetroLineType): number {
+  switch (type) {
+    case 'intercity':
+      return 1.20; // +20% faster than metro
+    case 'high_speed':
+      return 1.80; // +80% faster than metro
+    case 'metro':
+    default:
+      return 1.0; // standard metro speed
+  }
+}
+
 export class MetroEngine {
   public state: SimulationState;
   public mapConfig: CityMapConfig;
-  private stationPool: { shape: StationShape; x: number; y: number; name: string }[];
+  public stationPool: StationData[];
+  public masterStationPool: StationData[];
+  public masterInitialStations: StationData[];
+  public isUnlimitedMode: boolean = false;
   private nextStationSpawnTime: number = 25; // seconds
   private lastWarningSoundTime: number = 0;
   private passengerIdCounter: number = 1;
 
+  public toggleUnlimitedMode() {
+    this.isUnlimitedMode = !this.isUnlimitedMode;
+    if (this.isUnlimitedMode) {
+      this.state.inventory.availableLines = 99;
+      this.state.inventory.unassignedTrains = 99;
+      this.state.inventory.carriages = 99;
+      this.state.inventory.tunnelTokens = 99;
+      this.state.inventory.interchangeTokens = 99;
+    }
+  }
+
+  public spawnStation() {
+    this.spawnNextStation();
+  }
+
   constructor(mapConfig: CityMapConfig, mode: GameMode = 'standard') {
     this.mapConfig = mapConfig;
+    this.masterStationPool = [...mapConfig.stationPool];
+    this.masterInitialStations = [...mapConfig.initialStations];
     this.stationPool = [...mapConfig.stationPool];
 
     // Initialize stations
@@ -81,7 +126,9 @@ export class MetroEngine {
         moneyEarned: 0,
         peakLinesUsed: 0,
         peakTrainsUsed: 0,
-        crowdedWarningsAvoided: 0
+        crowdedWarningsAvoided: 0,
+        todayPassengers: 0,
+        dailyHistory: []
       },
       money: 200000,
       timeOfDayHours: 7.0, // starts at 07:00 AM
@@ -93,7 +140,29 @@ export class MetroEngine {
       floatingTexts: [],
       pendingWeeklyReward: false,
       gameMode: mode,
-      isRushHour: false
+      isRushHour: false,
+      weather: {
+        type: 'sunny',
+        current: 'sunny',
+        temperature: 31,
+        rainIntensity: 0,
+        descriptionVi: 'Trời nắng ráo',
+        descriptionEn: 'Sunny & Clear',
+        floodedStationIds: [],
+        durationRemaining: 180
+      },
+      activeIncident: null,
+      campaignState: null,
+      inspectorState: {
+        status: 'idle',
+        currentStationId: null,
+        currentTrainId: null,
+        visitedStationIds: [],
+        timeRemaining: 90,
+        cooldownRemaining: 0,
+        targetCount: 5,
+        rewardAmount: 4000
+      }
     };
   }
 
@@ -103,6 +172,41 @@ export class MetroEngine {
 
   public setGameMode(mode: GameMode) {
     this.state.gameMode = mode;
+  }
+
+  // Creative Time Adjustment: relative delta from baseline [-1h, +2h]
+  public timeOffsetHours: number = 0;
+
+  public adjustTimeOfDay(deltaHours: number) {
+    const targetOffset = Math.max(-1.0, Math.min(2.0, this.timeOffsetHours + deltaHours));
+    const effectiveDelta = targetOffset - this.timeOffsetHours;
+    this.timeOffsetHours = targetOffset;
+
+    let nextHours = this.state.timeOfDayHours + effectiveDelta;
+    if (nextHours < 0) nextHours += 24;
+    if (nextHours >= 24) nextHours -= 24;
+    this.state.timeOfDayHours = Number(nextHours.toFixed(3));
+
+    const h = this.state.timeOfDayHours % 24;
+    this.state.isRushHour = (h >= 7.0 && h <= 9.5) || (h >= 17.0 && h <= 19.5);
+  }
+
+  public setTimeOffset(offset: number) {
+    const targetOffset = Math.max(-1.0, Math.min(2.0, offset));
+    const effectiveDelta = targetOffset - this.timeOffsetHours;
+    this.timeOffsetHours = targetOffset;
+
+    let nextHours = this.state.timeOfDayHours + effectiveDelta;
+    if (nextHours < 0) nextHours += 24;
+    if (nextHours >= 24) nextHours -= 24;
+    this.state.timeOfDayHours = Number(nextHours.toFixed(3));
+
+    const h = this.state.timeOfDayHours % 24;
+    this.state.isRushHour = (h >= 7.0 && h <= 9.5) || (h >= 17.0 && h <= 19.5);
+  }
+
+  public resetTimeOffset() {
+    this.setTimeOffset(0);
   }
 
   /**
@@ -128,6 +232,26 @@ export class MetroEngine {
 
     if (this.state.timeOfDayHours >= 24) {
       this.state.timeOfDayHours -= 24;
+      const finishedDayIndex = this.state.currentDayIndex;
+      const dayNameVi = DAY_NAMES_VI[finishedDayIndex] || `Ngày ${this.state.stats.totalDays}`;
+      const dayNameEn = DAY_NAMES_EN[finishedDayIndex] || `Day ${this.state.stats.totalDays}`;
+
+      if (!this.state.stats.dailyHistory) {
+        this.state.stats.dailyHistory = [];
+      }
+      this.state.stats.dailyHistory.push({
+        dayIndex: finishedDayIndex,
+        dayNameVi,
+        dayNameEn,
+        passengers: this.state.stats.todayPassengers || 0,
+        totalDelivered: this.state.stats.totalPassengersDelivered
+      });
+      // Keep up to 14 days of history
+      if (this.state.stats.dailyHistory.length > 14) {
+        this.state.stats.dailyHistory.shift();
+      }
+      this.state.stats.todayPassengers = 0;
+
       this.state.currentDayIndex = (this.state.currentDayIndex + 1) % 7;
       this.state.stats.totalDays++;
 
@@ -159,11 +283,46 @@ export class MetroEngine {
     // 4. Train Movement, Boarding & Alighting
     this.updateTrains(simDt);
 
+    // 4b. Metro Line Inspector Simulation
+    this.updateInspector(simDt);
+
     // 5. Station Overcrowding checks
     this.updateOvercrowding(simDt);
 
     // 6. Update floating texts
     this.updateFloatingTexts(simDt);
+
+    // 7. Update Weather & Urban Incidents
+    this.updateWeather(simDt);
+
+    // 8. Campaign Mode Progression & Win/Loss Evaluation
+    if (this.state.gameMode === 'campaign' && this.state.campaignState && !this.state.campaignState.isWon && !this.state.campaignState.isFailed) {
+      const cs = this.state.campaignState;
+      cs.currentDelivered = this.state.stats.totalPassengersDelivered;
+      cs.currentDay = this.state.stats.totalDays;
+
+      const scenario = CAMPAIGN_SCENARIOS.find(s => s.id === cs.scenarioId);
+      const targetBudget = cs.scenarioId === 'budget_master' ? 3500 : 0;
+      const budgetMet = this.state.money >= targetBudget;
+
+      if (cs.currentDelivered >= cs.targetPassengers && budgetMet) {
+        cs.isWon = true;
+        let stars = 1;
+        if (scenario) {
+          if (cs.currentDay <= scenario.starThresholds.threeStarDays) stars = 3;
+          else if (cs.currentDay <= scenario.starThresholds.twoStarDays) stars = 2;
+        }
+        cs.starsEarned = stars;
+        soundEngine.playFanfare();
+        const worldW = this.mapConfig.worldWidth || 2400;
+        const worldH = this.mapConfig.worldHeight || 1700;
+        this.addFloatingText(worldW / 2, worldH / 2, '🎉 CHIẾN THẮNG KỊCH BẢN! 🎉', '#10B981');
+      } else if (cs.currentDay > cs.timeLimitDays) {
+        cs.isFailed = true;
+        cs.failReason = 'Hết thời gian quy định của kịch bản';
+        soundEngine.playGameOver();
+      }
+    }
   }
 
   private spawnNextStation() {
@@ -194,12 +353,16 @@ export class MetroEngine {
     const existingShapes = Array.from(new Set(this.state.stations.map(s => s.shape)));
     if (existingShapes.length < 2) return;
 
-    // Spawn rate multiplier: higher during rush hour
+    // Spawn rate multiplier: higher during rush hour & during rain/storm/flood (+35%)
     const rushMultiplier = this.state.isRushHour ? 2.6 : 1.0;
+    const weatherSpawnMultiplier = (this.state.weather.type === 'rainy' || this.state.weather.type === 'storm' || this.state.weather.type === 'flooded')
+      ? 1.35
+      : 1.0;
+    const spawnMultiplier = rushMultiplier * weatherSpawnMultiplier;
 
     for (const station of this.state.stations) {
       // Chance per second to spawn a passenger at this station
-      const spawnRate = (0.07 + Math.random() * 0.05) * rushMultiplier;
+      const spawnRate = (0.07 + Math.random() * 0.05) * spawnMultiplier;
       if (Math.random() < spawnRate * simDt) {
         if (station.passengers.length < station.maxCapacity + 4) {
           // Choose a target shape distinct from current station shape
@@ -250,6 +413,9 @@ export class MetroEngine {
       // If dwelling at station
       if (train.dwellingTime > 0) {
         train.dwellingTime -= simDt;
+        if (train.dwellingTime <= 0) {
+          train.currentStationId = undefined;
+        }
         continue;
       }
 
@@ -263,8 +429,16 @@ export class MetroEngine {
       if (!s1 || !s2) continue;
 
       const segDistance = Math.max(40, distance(s1, s2));
-      // Base train moves ~75 pixels per second at 1x
-      const speed = train.speed || 75;
+      // Base train speed reduced to 3/5 of previous speed; adjusted by line type multiplier (metro = 1.0x, intercity = 1.2x, high_speed = 1.8x)
+      const baseSpeed = typeof train.speed === 'number' && train.speed > 5 ? train.speed : 75;
+      const typeMultiplier = getLineSpeedMultiplier(line.type);
+      let weatherSpeedMultiplier = 1.0;
+      if (s1.isFlooded || s2.isFlooded) {
+        weatherSpeedMultiplier = 0.55; // Flooded track cautious crawl
+      } else if (this.state.weather.type === 'storm') {
+        weatherSpeedMultiplier = 0.80; // Storm caution
+      }
+      const speed = baseSpeed * 0.6 * typeMultiplier * weatherSpeedMultiplier;
       const stepProgress = (speed * simDt) / segDistance;
 
       train.progress += stepProgress;
@@ -335,9 +509,13 @@ export class MetroEngine {
       if (p.targetShape === station.shape) {
         // Successful destination reached!
         passengersDeliveredHere++;
-        const fare = this.state.isRushHour ? 25 : 18;
+        const baseFare = this.state.isRushHour ? 25 : 18;
+        // Standard mode earns 2x ticket revenue bonus
+        const modeMultiplier = this.state.gameMode === 'standard' ? 2 : 1;
+        const fare = baseFare * modeMultiplier;
         fareEarned += fare;
         this.state.stats.totalPassengersDelivered++;
+        this.state.stats.todayPassengers = (this.state.stats.todayPassengers || 0) + 1;
         this.state.stats.moneyEarned += fare;
       } else {
         // Check if passenger should transfer at this station
@@ -357,7 +535,8 @@ export class MetroEngine {
     if (passengersDeliveredHere > 0) {
       this.state.money += fareEarned;
       soundEngine.playArrive(passengersDeliveredHere);
-      this.addFloatingText(station.x, station.y - 20, `+$${fareEarned}`, '#10B981');
+      const is2x = this.state.gameMode === 'standard';
+      this.addFloatingText(station.x, station.y - 20, is2x ? `+$${fareEarned} (2x)` : `+$${fareEarned}`, '#10B981');
     }
 
     // 2. Boarding passengers at station
@@ -382,6 +561,71 @@ export class MetroEngine {
       station.passengers = remainingAtStation;
       if (boardedCount > 0) {
         soundEngine.playBoard();
+      }
+    }
+
+    // 3. Metro Line Inspector Logic: Alight at planned stations to inspect, then catch next train
+    const insp = this.state.inspectorState;
+    if (insp && insp.status === 'patrolling') {
+      // Case A: Inspector was waiting at this station -> hop onto next arriving train heading towards end station!
+      if (insp.currentStationId === station.id && !insp.currentTrainId) {
+        const canBoard = (!insp.dwellAtStationTimer || insp.dwellAtStationTimer <= 0) && train.id !== insp.lastTrainId;
+        const endStId = insp.plannedStationIds && insp.plannedStationIds.length > 0
+          ? insp.plannedStationIds[insp.plannedStationIds.length - 1]
+          : null;
+        const isHeadingToEnd = !endStId || this.isTrainHeadingTowardsEnd(train, station.id, endStId, line);
+
+        if (canBoard && (!insp.targetLineId || insp.targetLineId === train.lineId) && isHeadingToEnd) {
+          insp.currentTrainId = train.id;
+          insp.currentStationId = null;
+          insp.lastTrainId = null;
+          soundEngine.playInspectorBoard();
+          const endSt = endStId ? this.state.stations.find(s => s.id === endStId) : null;
+          const endName = endSt ? `Ga ${endSt.name}` : 'ga cuối';
+          this.addFloatingText(station.x, station.y - 32, `👮 Lên tàu hướng về ${endName}!`, '#F59E0B');
+        }
+      }
+      // Case B: Inspector is aboard this arriving train -> check if this station is in the planned itinerary!
+      else if (insp.currentTrainId === train.id) {
+        const isPlanned = !insp.plannedStationIds || insp.plannedStationIds.includes(station.id);
+        const isAlreadyInspected = insp.visitedStationIds.includes(station.id);
+
+        // DO NOT ALIGHT AT STATIONS ALREADY INSPECTED! ("ko xuống ga đã được mark là đã kt")
+        if (isPlanned && !isAlreadyInspected) {
+          insp.visitedStationIds.push(station.id);
+          const count = insp.visitedStationIds.length;
+          const target = insp.targetCount;
+
+          // Inspector ALIGHTS to inspect this station!
+          insp.currentStationId = station.id;
+          insp.currentTrainId = null;
+          insp.lastTrainId = train.id;
+          insp.dwellAtStationTimer = 3.0; // 3 seconds inspecting platform before catching next train
+
+          if (count >= target) {
+            insp.status = 'completed';
+            insp.cooldownRemaining = 30; // 30s cooldown
+            insp.currentTrainId = null;
+            this.state.money += insp.rewardAmount;
+            this.state.stats.moneyEarned += insp.rewardAmount;
+            soundEngine.playInspectorReward();
+            this.addFloatingText(
+              station.x,
+              station.y - 40,
+              `🎉 +$${insp.rewardAmount.toLocaleString()} HOÀN THÀNH THANH TRA! (${count}/${target} ga)`,
+              '#F59E0B'
+            );
+          } else {
+            soundEngine.playInspectorCheck(count);
+            this.addFloatingText(
+              station.x,
+              station.y - 32,
+              `👮 Xuống ga ${station.name} (${count}/${target})! Đang kiểm tra & chờ tàu kế...`,
+              '#10B981'
+            );
+          }
+        }
+        // If already inspected or not planned: inspector stays on board train heading to destination!
       }
     }
   }
@@ -450,8 +694,519 @@ export class MetroEngine {
       .filter(ft => ft.life > 0);
   }
 
+  /**
+   * Checks whether a train at currentStationId is heading towards endStationId on line.
+   * Ensures the inspector only travels in the forward direction from start to end station.
+   */
+  public isTrainHeadingTowardsEnd(
+    train: Train,
+    currentStationId: string,
+    endStationId: string,
+    line: MetroLine
+  ): boolean {
+    if (!line || line.stationIds.length < 2) return false;
+    const sIds = line.stationIds;
+    const currIdx = sIds.indexOf(currentStationId);
+    const endIdx = sIds.indexOf(endStationId);
+    if (currIdx === -1 || endIdx === -1) return false;
+    if (currIdx === endIdx) return true;
+
+    // Determine the departing direction of the train from currentStationId
+    let depDirection = train.direction;
+
+    if (!line.isLoop) {
+      const totalSegments = sIds.length - 1;
+      if (currIdx >= totalSegments || train.segmentIndex >= totalSegments) {
+        depDirection = -1;
+      } else if (currIdx <= 0 || train.segmentIndex < 0) {
+        depDirection = 1;
+      }
+
+      if (endIdx > currIdx) {
+        return depDirection === 1;
+      } else {
+        return depDirection === -1;
+      }
+    } else {
+      // Loop line
+      const total = sIds.length;
+      if (depDirection === 1) {
+        const forwardDist = (endIdx - currIdx + total) % total;
+        const backwardDist = (currIdx - endIdx + total) % total;
+        return forwardDist <= backwardDist;
+      } else {
+        const backwardDist = (currIdx - endIdx + total) % total;
+        const forwardDist = (endIdx - currIdx + total) % total;
+        return backwardDist <= forwardDist;
+      }
+    }
+  }
+
+  // --- Metro Line Inspector Controller & Loop ---
+  public startSelectingInspectorStation(): boolean {
+    if (!this.state.inspectorState) {
+      this.state.inspectorState = {
+        status: 'idle',
+        currentStationId: null,
+        currentTrainId: null,
+        visitedStationIds: [],
+        timeRemaining: 90,
+        cooldownRemaining: 0,
+        targetCount: 5,
+        rewardAmount: 2000
+      };
+    }
+
+    if (this.state.inspectorState.cooldownRemaining > 0) {
+      soundEngine.playDisconnect();
+      this.addFloatingText(740, 500, `Thanh tra đang hồi chiêu (${Math.ceil(this.state.inspectorState.cooldownRemaining)}s)`, '#EF4444');
+      return false;
+    }
+
+    if (this.state.stations.length === 0) {
+      soundEngine.playDisconnect();
+      this.addFloatingText(740, 500, 'Chưa có nhà ga nào trên bản đồ!', '#EF4444');
+      return false;
+    }
+
+    this.state.inspectorState.status = 'selecting_station';
+    soundEngine.playInspectorCheck(1);
+    this.addFloatingText(740, 500, '👉 Chọn 1 ga bất kỳ để xuất phát thanh tra', '#F59E0B');
+    return true;
+  }
+
+  public cancelInspector(): void {
+    const insp = this.state.inspectorState;
+    if (!insp) return;
+
+    if (insp.status === 'selecting_station') {
+      insp.status = 'idle';
+      return;
+    }
+
+    if (insp.status === 'patrolling') {
+      insp.status = 'idle';
+      insp.currentTrainId = null;
+      insp.currentStationId = null;
+      insp.visitedStationIds = [];
+      insp.timeRemaining = 90;
+      soundEngine.playDisconnect();
+      this.addFloatingText(740, 500, 'Đã hủy nhiệm vụ thanh tra tuyến tàu', '#94A3B8');
+    }
+  }
+
+  public deployInspectorAtStation(stationId: string): boolean {
+    const station = this.state.stations.find(s => s.id === stationId);
+    if (!station) return false;
+
+    this.state.inspectorState = {
+      status: 'patrolling',
+      currentStationId: station.id,
+      currentTrainId: null,
+      visitedStationIds: [station.id],
+      timeRemaining: 90,
+      cooldownRemaining: 0,
+      targetCount: 5,
+      rewardAmount: 2000,
+      failureReason: undefined
+    };
+
+    soundEngine.playInspectorBoard();
+    this.addFloatingText(station.x, station.y - 25, '👮 Thanh tra đã vào vị trí: 1/5 ga!', '#F59E0B');
+    return true;
+  }
+
+  public deployInspectorOnLine(lineId: string, plannedStationIds?: string[] | string): { success: boolean; errorMsg?: string } {
+    if (!this.state.inspectorState) {
+      this.state.inspectorState = {
+        status: 'idle',
+        currentStationId: null,
+        currentTrainId: null,
+        targetLineId: null,
+        visitedStationIds: [],
+        timeRemaining: 90,
+        cooldownRemaining: 0,
+        targetCount: 5,
+        rewardAmount: 4000
+      };
+    }
+
+    const DEPLOY_COST = 1000;
+
+    if (this.state.inspectorState.cooldownRemaining > 0) {
+      soundEngine.playDisconnect();
+      const msg = `Thanh tra đang hồi chiêu (${Math.ceil(this.state.inspectorState.cooldownRemaining)}s)`;
+      this.addFloatingText(740, 500, msg, '#EF4444');
+      return { success: false, errorMsg: msg };
+    }
+
+    if (this.state.money < DEPLOY_COST) {
+      soundEngine.playDisconnect();
+      const msg = `Không đủ tiền! Bạn cần ít nhất $${DEPLOY_COST.toLocaleString()} để chi trả phí thanh tra.`;
+      this.addFloatingText(740, 500, msg, '#EF4444');
+      return { success: false, errorMsg: msg };
+    }
+
+    const line = this.state.lines.find(l => l.id === lineId);
+    if (!line) {
+      soundEngine.playDisconnect();
+      const msg = 'Không tìm thấy tuyến tàu!';
+      this.addFloatingText(740, 500, msg, '#EF4444');
+      return { success: false, errorMsg: msg };
+    }
+
+    // Determine chosen stations (minimum 5 stations, but can be 5 or more)
+    let chosenIds: string[] = [];
+    if (Array.isArray(plannedStationIds) && plannedStationIds.length > 0) {
+      chosenIds = plannedStationIds.filter(id => line.stationIds.includes(id));
+    } else if (typeof plannedStationIds === 'string' && line.stationIds.includes(plannedStationIds)) {
+      const startIdx = line.stationIds.indexOf(plannedStationIds);
+      chosenIds = [...line.stationIds.slice(startIdx), ...line.stationIds.slice(0, startIdx)];
+    } else {
+      chosenIds = [...line.stationIds];
+    }
+
+    if (chosenIds.length < 5) {
+      soundEngine.playDisconnect();
+      const msg = `Cần chọn ít nhất 5 ga trên tuyến ${line.name} (đã chọn ${chosenIds.length} ga)!`;
+      this.addFloatingText(740, 500, msg, '#EF4444');
+      return { success: false, errorMsg: msg };
+    }
+
+    const targetCount = chosenIds.length;
+    // Formula: 300 x số ga
+    const rewardAmount = 300 * targetCount;
+    // Time limit: 90s base for 5 stations, +20s per extra station
+    const timeRemaining = 90 + Math.max(0, targetCount - 5) * 20;
+
+    // Deduct $1,000 deployment fee
+    this.state.money -= DEPLOY_COST;
+
+    const startStId = chosenIds[0];
+    const endStId = chosenIds[chosenIds.length - 1];
+    const startStation = this.state.stations.find(s => s.id === startStId);
+    const endStation = this.state.stations.find(s => s.id === endStId);
+
+    // Inspector starts AT THE FIRST STATION (startStId) on the platform
+    // First station is inspected for 3.0s, then inspector only boards trains heading to end station!
+    this.state.inspectorState = {
+      status: 'patrolling',
+      targetLineId: line.id,
+      currentStationId: startStId,
+      currentTrainId: null,
+      visitedStationIds: [startStId],
+      plannedStationIds: chosenIds,
+      lastTrainId: null,
+      dwellAtStationTimer: 3.0,
+      timeRemaining,
+      cooldownRemaining: 0,
+      targetCount,
+      rewardAmount,
+      failureReason: undefined
+    };
+
+    soundEngine.playInspectorBoard();
+    const stX = startStation ? startStation.x : 740;
+    const stY = startStation ? startStation.y : 500;
+    const endName = endStation ? `Ga ${endStation.name}` : 'ga cuối';
+    this.addFloatingText(
+      stX,
+      stY - 25,
+      `👮 Xuất phát tại Ga ${startStation?.name || ''} ➔ Hướng về ${endName} (-$1,000)`,
+      '#F59E0B'
+    );
+    return { success: true };
+  }
+
+  public alightInspectorAtStation(): boolean {
+    const insp = this.state.inspectorState;
+    if (!insp || insp.status !== 'patrolling' || !insp.currentTrainId) {
+      return false;
+    }
+    const train = this.state.trains.find(t => t.id === insp.currentTrainId);
+    if (train && train.currentStationId) {
+      // Do not alight at stations that are already marked as inspected!
+      if (insp.visitedStationIds.includes(train.currentStationId)) {
+        soundEngine.playDisconnect();
+        this.addFloatingText(740, 500, 'Ga này đã được kiểm tra xong rồi!', '#94A3B8');
+        return false;
+      }
+      insp.currentStationId = train.currentStationId;
+      insp.currentTrainId = null;
+      insp.lastTrainId = train.id;
+      insp.dwellAtStationTimer = 3.0;
+      if (!insp.visitedStationIds.includes(train.currentStationId)) {
+        insp.visitedStationIds.push(train.currentStationId);
+      }
+      const st = this.state.stations.find(s => s.id === train.currentStationId);
+      soundEngine.playInspectorBoard();
+      if (st) {
+        this.addFloatingText(st.x, st.y - 25, '👮 Đang kiểm tra sân ga...', '#06B6D4');
+      }
+      return true;
+    }
+    return false;
+  }
+
+  private updateInspector(simDt: number) {
+    const insp = this.state.inspectorState;
+    if (!insp) return;
+
+    // Cooldown management for completed or failed states
+    if (insp.status === 'completed' || insp.status === 'failed') {
+      insp.cooldownRemaining = Math.max(0, insp.cooldownRemaining - simDt);
+      if (insp.cooldownRemaining <= 0) {
+        insp.status = 'idle';
+        insp.visitedStationIds = [];
+        insp.currentStationId = null;
+        insp.currentTrainId = null;
+        insp.failureReason = undefined;
+      }
+      return;
+    }
+
+    if (insp.status === 'idle') {
+      if (insp.cooldownRemaining > 0) {
+        insp.cooldownRemaining = Math.max(0, insp.cooldownRemaining - simDt);
+      }
+      return;
+    }
+
+    if (insp.status !== 'patrolling') return;
+
+    // 0. Dwell timer countdown at station platform
+    if (insp.dwellAtStationTimer && insp.dwellAtStationTimer > 0) {
+      insp.dwellAtStationTimer -= simDt;
+    }
+
+    // 0.1 Reset lastTrainId once that previous train leaves the station
+    if (insp.lastTrainId && insp.currentStationId) {
+      const prevTrain = this.state.trains.find(t => t.id === insp.lastTrainId);
+      if (!prevTrain || prevTrain.currentStationId !== insp.currentStationId) {
+        insp.lastTrainId = null;
+      }
+    }
+
+    // 1. Time Limit Countdown
+    insp.timeRemaining -= simDt;
+    if (insp.timeRemaining <= 0) {
+      insp.status = 'failed';
+      insp.failureReason = 'Hết thời gian tuần tra';
+      insp.cooldownRemaining = 30; // 30s cooldown
+      insp.currentTrainId = null;
+      insp.currentStationId = null;
+      soundEngine.playInspectorFail();
+      this.addFloatingText(740, 500, '❌ Hết thời gian thanh tra!', '#EF4444');
+      return;
+    }
+
+    // 2. Failure Condition: network overcrowding
+    const overcrowdedStation = this.state.stations.find(s => s.isOvercrowded && s.overcrowdedTimer >= 0.85);
+    if (overcrowdedStation) {
+      insp.status = 'failed';
+      insp.failureReason = `Ga "${overcrowdedStation.name}" bị quá tải!`;
+      insp.cooldownRemaining = 30; // 30s cooldown
+      insp.currentTrainId = null;
+      insp.currentStationId = null;
+      soundEngine.playInspectorFail();
+      this.addFloatingText(overcrowdedStation.x, overcrowdedStation.y - 30, '❌ Nhiệm vụ hủy: Ga bị quá tải!', '#EF4444');
+      return;
+    }
+
+    // 3. Platform Boarding check: If inspector is waiting on platform and done inspecting platform
+    if (insp.currentStationId && !insp.currentTrainId) {
+      const canBoard = !insp.dwellAtStationTimer || insp.dwellAtStationTimer <= 0;
+      if (canBoard) {
+        const waitingStationId = insp.currentStationId;
+        const line = this.state.lines.find(l => l.id === (insp.targetLineId || ''));
+        const endStId = insp.plannedStationIds && insp.plannedStationIds.length > 0
+          ? insp.plannedStationIds[insp.plannedStationIds.length - 1]
+          : null;
+
+        const boardingTrain = this.state.trains.find(t => 
+          t.currentStationId === waitingStationId && 
+          t.dwellingTime > 0 &&
+          t.id !== insp.lastTrainId &&
+          (!insp.targetLineId || t.lineId === insp.targetLineId) &&
+          (!line || !endStId || this.isTrainHeadingTowardsEnd(t, waitingStationId, endStId, line))
+        );
+        if (boardingTrain) {
+          insp.currentTrainId = boardingTrain.id;
+          insp.currentStationId = null;
+          insp.lastTrainId = null;
+          const endSt = endStId ? this.state.stations.find(s => s.id === endStId) : null;
+          const endName = endSt ? `Ga ${endSt.name}` : 'ga cuối';
+          soundEngine.playInspectorBoard();
+          this.addFloatingText(740, 500, `👮 Lên tàu hướng về ${endName}!`, '#F59E0B');
+        }
+      }
+    }
+
+    // 4. In-train health check
+    if (insp.currentTrainId) {
+      const train = this.state.trains.find(t => t.id === insp.currentTrainId);
+      if (!train) {
+        insp.status = 'failed';
+        insp.failureReason = 'Đoàn tàu thanh tra bị thu hồi';
+        insp.cooldownRemaining = 60;
+        insp.currentTrainId = null;
+        soundEngine.playInspectorFail();
+        this.addFloatingText(740, 500, '❌ Đoàn tàu thanh tra bị thu hồi!', '#EF4444');
+      }
+    }
+  }
+
+  // --- Dynamic Weather & Urban Incidents ---
+  public clearActiveIncident() {
+    this.state.activeIncident = null;
+    this.state.stations.forEach(s => {
+      s.isFlooded = false;
+    });
+    if (this.state.weather) {
+      this.state.weather.floodedStationIds = [];
+    }
+  }
+
+  private updateWeather(simDt: number) {
+    this.state.weather.durationRemaining -= simDt;
+    const worldW = this.mapConfig.worldWidth || 2400;
+    const worldH = this.mapConfig.worldHeight || 1700;
+
+    // Check incident timer if active
+    if (this.state.activeIncident) {
+      this.state.activeIncident.remainingSeconds -= simDt;
+      if (this.state.activeIncident.remainingSeconds <= 0) {
+        // Incident resolved! Grant bonus reward
+        const reward = this.state.activeIncident.rewardEarned || 500;
+        this.state.money += reward;
+        this.addFloatingText(
+          worldW / 2,
+          worldH / 2,
+          `+$${reward} Khắc phục xong sự cố ngập úng!`,
+          '#10B981'
+        );
+        soundEngine.playCashReward();
+        this.clearActiveIncident();
+      }
+    }
+
+    if (this.state.weather.durationRemaining <= 0) {
+      // If previous weather was flooded/storm, give safe clearance reward
+      if (this.state.weather.type === 'flooded' || this.state.weather.type === 'storm') {
+        const reward = 600;
+        this.state.money += reward;
+        this.addFloatingText(
+          worldW / 2,
+          worldH / 2 - 40,
+          `+$${reward} Thưởng vượt ngập bão an toàn!`,
+          '#06B6D4'
+        );
+        soundEngine.playCashReward();
+      }
+
+      // Clear any previous incident and unflood stations when weather cycle expires
+      this.clearActiveIncident();
+
+      // Pick next weather
+      const roll = Math.random();
+      if (roll < 0.60) {
+        this.setWeather('sunny');
+      } else if (roll < 0.85) {
+        this.setWeather('rainy');
+      } else {
+        this.setWeather('flooded');
+      }
+    }
+  }
+
+  public setWeather(type: WeatherType) {
+    // Clear previous incident and unflood all stations
+    this.clearActiveIncident();
+
+    const floodedIds: string[] = [];
+    let temp = 31;
+    let rainInt = 0;
+    let descVi = 'Trời nắng ráo';
+    let descEn = 'Sunny & Clear';
+    let duration = 180 + Math.random() * 60;
+    const worldW = this.mapConfig.worldWidth || 2400;
+    const worldH = this.mapConfig.worldHeight || 1700;
+
+    if (type === 'rainy') {
+      temp = 26;
+      rainInt = 0.55;
+      descVi = 'Mưa rào đô thị';
+      descEn = 'City Rain';
+      duration = 75 + Math.random() * 30;
+      this.addFloatingText(
+        worldW / 2,
+        worldH / 2,
+        '🌧️ Mưa rào: Khách dồn lên tàu (+35%)',
+        '#38BDF8'
+      );
+    } else if (type === 'storm') {
+      temp = 24;
+      rainInt = 0.85;
+      descVi = 'Mưa giông sấm sét';
+      descEn = 'Thunderstorm';
+      duration = 50 + Math.random() * 20;
+      this.addFloatingText(
+        worldW / 2,
+        worldH / 2,
+        '⛈️ Giông bão: Tàu giảm tốc an toàn',
+        '#818CF8'
+      );
+    } else if (type === 'flooded') {
+      temp = 25;
+      rainInt = 1.0;
+      descVi = 'Mưa lớn ngập úng';
+      descEn = 'Urban Waterlogging';
+      duration = 50 + Math.random() * 20;
+
+      if (this.state.stations.length > 0) {
+        const shuffled = [...this.state.stations].sort(() => 0.5 - Math.random());
+        const floodCount = Math.min(2, Math.max(1, Math.floor(this.state.stations.length / 4)));
+        const chosen = shuffled.slice(0, floodCount);
+        chosen.forEach(s => {
+          s.isFlooded = true;
+          floodedIds.push(s.id);
+          this.addFloatingText(s.x, s.y - 25, '🌊 Ga ngập nước! Tàu chạy chậm', '#38BDF8');
+        });
+
+        this.state.activeIncident = {
+          id: `inc-${Date.now()}`,
+          titleVi: 'Ngập úng đô thị cục bộ',
+          titleEn: 'Urban Flooding Incident',
+          descriptionVi: `Ga ${chosen.map(c => c.name).join(', ')} bị ngập. Tàu giảm tốc 40%.`,
+          descriptionEn: `Stations ${chosen.map(c => c.name).join(', ')} flooded. Trains cautious speed.`,
+          affectedStationIds: floodedIds,
+          speedMultiplier: 0.6,
+          remainingSeconds: duration,
+          rewardEarned: 800
+        };
+      }
+    }
+
+    this.state.weather = {
+      type,
+      current: type,
+      temperature: temp,
+      rainIntensity: rainInt,
+      descriptionVi: descVi,
+      descriptionEn: descEn,
+      floodedStationIds: floodedIds,
+      durationRemaining: duration
+    };
+  }
+
   // Route Management
-  public createLine(name: string, color: string, darkColor: string, textColor: string): MetroLine | null {
+  public createLine(
+    name: string,
+    color: string,
+    darkColor: string,
+    textColor: string,
+    type: MetroLineType = 'metro'
+  ): MetroLine | null {
     if (this.state.lines.length >= this.state.inventory.availableLines) {
       return null;
     }
@@ -463,12 +1218,23 @@ export class MetroEngine {
       darkColor,
       textColor,
       stationIds: [],
-      isLoop: false
+      isLoop: false,
+      type
     };
 
     this.state.lines.push(newLine);
     soundEngine.playConnect();
     return newLine;
+  }
+
+  public updateLineType(lineId: string, type: MetroLineType): boolean {
+    const line = this.state.lines.find(l => l.id === lineId);
+    if (!line) return false;
+    line.type = type;
+    soundEngine.playConnect();
+    const typeLabel = type === 'high_speed' ? 'High Speed (+80%)' : type === 'intercity' ? 'Intercity (+20%)' : 'Metro (Chuẩn)';
+    this.addFloatingText(740, 500, `${line.name} ➔ ${typeLabel}`, '#10B981');
+    return true;
   }
 
   public deleteLine(lineId: string) {
@@ -482,6 +1248,190 @@ export class MetroEngine {
     this.state.trains = this.state.trains.filter(t => t.lineId !== lineId);
     this.state.lines = this.state.lines.filter(l => l.id !== lineId);
     soundEngine.playDisconnect();
+  }
+
+  public updateLineColor(lineId: string, color: string, darkColor: string, textColor: string): boolean {
+    const line = this.state.lines.find(l => l.id === lineId);
+    if (!line) return false;
+    line.color = color;
+    line.darkColor = darkColor;
+    line.textColor = textColor;
+    soundEngine.playConnect();
+    return true;
+  }
+
+  public clearAllStations(): void {
+    // Return all active trains and carriages to depot
+    this.state.inventory.unassignedTrains += this.state.trains.length;
+    const totalCars = this.state.trains.reduce((sum, t) => sum + t.carriagesCount, 0);
+    this.state.inventory.carriages += totalCars;
+    this.state.trains = [];
+
+    // Reset all lines (clear routes)
+    for (const line of this.state.lines) {
+      line.stationIds = [];
+      line.isLoop = false;
+    }
+
+    // Clear all stations
+    this.state.stations = [];
+
+    // Critical fix: restore stationPool from master configuration so stations can be spawned/unlocked again!
+    this.stationPool = [...this.masterStationPool];
+
+    soundEngine.playDisconnect();
+    this.addFloatingText(740, 500, 'Đã xóa tất cả nhà ga trên bản đồ', '#EF4444');
+  }
+
+  public restoreDefaultStations(): void {
+    // Clear lines and return fleet
+    this.state.inventory.unassignedTrains += this.state.trains.length;
+    const totalCars = this.state.trains.reduce((sum, t) => sum + t.carriagesCount, 0);
+    this.state.inventory.carriages += totalCars;
+    this.state.trains = [];
+    for (const line of this.state.lines) {
+      line.stationIds = [];
+      line.isLoop = false;
+    }
+
+    // Restore initial stations
+    this.state.stations = this.masterInitialStations.map((s, idx) => ({
+      id: s.id || `st-${idx + 1}`,
+      name: s.name,
+      shape: s.shape,
+      x: s.x,
+      y: s.y,
+      passengers: [],
+      maxCapacity: 6,
+      isInterchange: false,
+      overcrowdedTimer: 0,
+      isOvercrowded: false,
+      spawnTime: 0
+    }));
+
+    // Reset stationPool
+    this.stationPool = [...this.masterStationPool];
+    soundEngine.playFanfare();
+    this.addFloatingText(740, 500, 'Đã khôi phục các nhà ga ban đầu!', '#10B981');
+  }
+
+  public deleteSingleStation(stationId: string): boolean {
+    const station = this.state.stations.find(s => s.id === stationId);
+    if (!station) return false;
+
+    // Remove station from any line traversing it
+    for (const line of [...this.state.lines]) {
+      if (line.stationIds.includes(stationId)) {
+        this.removeStationFromLine(line.id, stationId);
+      }
+    }
+
+    this.state.stations = this.state.stations.filter(s => s.id !== stationId);
+    soundEngine.playDisconnect();
+    this.addFloatingText(station.x, station.y - 20, `Đã xóa ga ${station.name}`, '#EF4444');
+    return true;
+  }
+
+  public createCustomStation(
+    name: string,
+    shape: StationShape,
+    x: number,
+    y: number,
+    cost = 1500
+  ): { success: boolean; station?: Station; errorMsg?: string } {
+    if (this.state.money < cost) {
+      soundEngine.playDisconnect();
+      return {
+        success: false,
+        errorMsg: `Cần $${cost.toLocaleString()} để xây nhà ga mới!`
+      };
+    }
+
+    this.state.money -= cost;
+    const newStation: Station = {
+      id: `custom-st-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      name: name.trim() || `Ga Mới ${this.state.stations.length + 1}`,
+      shape,
+      x: Math.round(x),
+      y: Math.round(y),
+      passengers: [],
+      maxCapacity: 6,
+      isInterchange: false,
+      overcrowdedTimer: 0,
+      isOvercrowded: false,
+      spawnTime: Date.now()
+    };
+
+    this.state.stations.push(newStation);
+    soundEngine.playStationSpawn();
+    this.addFloatingText(newStation.x, newStation.y - 20, `-$1,500 (+1 Ga ${newStation.name})`, '#10B981');
+
+    return { success: true, station: newStation };
+  }
+
+  public changeStationShape(stationId: string, shape: StationShape): boolean {
+    const station = this.state.stations.find(s => s.id === stationId);
+    if (!station) return false;
+    station.shape = shape;
+    soundEngine.playConnect();
+    this.addFloatingText(station.x, station.y - 20, `Đổi dạng: ${shape}`, '#3B82F6');
+    return true;
+  }
+
+  public unlockAllStations(): { count: number } {
+    const existingNames = new Set(this.state.stations.map(s => s.name));
+
+    // If pool is empty or stations were cleared, recharge from master lists
+    const missingStations: StationData[] = [];
+    for (const initSt of this.masterInitialStations) {
+      if (!existingNames.has(initSt.name)) {
+        missingStations.push(initSt);
+        existingNames.add(initSt.name);
+      }
+    }
+    for (const poolSt of this.masterStationPool) {
+      if (!existingNames.has(poolSt.name)) {
+        missingStations.push(poolSt);
+        existingNames.add(poolSt.name);
+      }
+    }
+
+    // Also include whatever was currently in this.stationPool
+    for (const p of this.stationPool) {
+      if (!existingNames.has(p.name)) {
+        missingStations.push(p);
+        existingNames.add(p.name);
+      }
+    }
+
+    if (missingStations.length === 0) {
+      soundEngine.playDisconnect();
+      this.addFloatingText(740, 500, 'Tất cả các nhà ga đã có mặt trên bản đồ!', '#38BDF8');
+      return { count: 0 };
+    }
+
+    const count = missingStations.length;
+    for (const poolSt of missingStations) {
+      const id = poolSt.id || `st-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+      this.state.stations.push({
+        id,
+        name: poolSt.name,
+        shape: poolSt.shape,
+        x: poolSt.x,
+        y: poolSt.y,
+        passengers: [],
+        maxCapacity: 6,
+        isInterchange: false,
+        overcrowdedTimer: 0,
+        isOvercrowded: false,
+        spawnTime: Date.now()
+      });
+    }
+
+    this.stationPool = [];
+    soundEngine.playFanfare();
+    this.addFloatingText(740, 500, `★ Đã mở khóa toàn bộ ${count} nhà ga!`, '#F59E0B');
+    return { count };
   }
 
   public addStationToLine(lineId: string, stationId: string): boolean {
@@ -611,6 +1561,11 @@ export class MetroEngine {
       }
     }
 
+    // If both stations are already in the line, avoid duplicate loop/reversal
+    if (sIds.includes(fromId) && sIds.includes(toId)) {
+      return targetLine;
+    }
+
     // Extend from end
     if (fromId === last && !sIds.includes(toId)) {
       sIds.push(toId);
@@ -635,8 +1590,49 @@ export class MetroEngine {
       return targetLine;
     }
 
-    // If both stations are already in line, ignore
-    if (sIds.includes(fromId) && sIds.includes(toId)) {
+    // If fromId is in the line (intermediate station), insert toId adjacent to fromId
+    const fromIdx = sIds.indexOf(fromId);
+    if (fromIdx !== -1 && !sIds.includes(toId)) {
+      const prevSt = fromIdx > 0 ? this.state.stations.find(s => s.id === sIds[fromIdx - 1]) : null;
+      const nextSt = fromIdx < sIds.length - 1 ? this.state.stations.find(s => s.id === sIds[fromIdx + 1]) : null;
+      const targetSt = this.state.stations.find(s => s.id === toId);
+      const currSt = this.state.stations.find(s => s.id === fromId);
+
+      if (prevSt && nextSt && targetSt && currSt) {
+        const distBefore = Math.hypot(prevSt.x - targetSt.x, prevSt.y - targetSt.y) + Math.hypot(targetSt.x - currSt.x, targetSt.y - currSt.y);
+        const distAfter = Math.hypot(currSt.x - targetSt.x, currSt.y - targetSt.y) + Math.hypot(targetSt.x - nextSt.x, targetSt.y - nextSt.y);
+        if (distAfter <= distBefore) {
+          sIds.splice(fromIdx + 1, 0, toId);
+        } else {
+          sIds.splice(fromIdx, 0, toId);
+        }
+      } else {
+        sIds.splice(fromIdx + 1, 0, toId);
+      }
+      soundEngine.playConnect();
+      return targetLine;
+    }
+
+    // If toId is in the line (intermediate station), insert fromId adjacent to toId
+    const toIdx = sIds.indexOf(toId);
+    if (toIdx !== -1 && !sIds.includes(fromId)) {
+      const prevSt = toIdx > 0 ? this.state.stations.find(s => s.id === sIds[toIdx - 1]) : null;
+      const nextSt = toIdx < sIds.length - 1 ? this.state.stations.find(s => s.id === sIds[toIdx + 1]) : null;
+      const fromSt = this.state.stations.find(s => s.id === fromId);
+      const currSt = this.state.stations.find(s => s.id === toId);
+
+      if (prevSt && nextSt && fromSt && currSt) {
+        const distBefore = Math.hypot(prevSt.x - fromSt.x, prevSt.y - fromSt.y) + Math.hypot(fromSt.x - currSt.x, fromSt.y - currSt.y);
+        const distAfter = Math.hypot(currSt.x - fromSt.x, currSt.y - fromSt.y) + Math.hypot(fromSt.x - nextSt.x, fromSt.y - nextSt.y);
+        if (distAfter <= distBefore) {
+          sIds.splice(toIdx + 1, 0, fromId);
+        } else {
+          sIds.splice(toIdx, 0, fromId);
+        }
+      } else {
+        sIds.splice(toIdx + 1, 0, fromId);
+      }
+      soundEngine.playConnect();
       return targetLine;
     }
 
@@ -664,7 +1660,7 @@ export class MetroEngine {
       lineId,
       carriagesCount: 0,
       capacity: 6,
-      speed: 75,
+      speed: 45,
       segmentIndex: 0,
       progress: 0,
       direction: 1,
@@ -917,11 +1913,63 @@ export class MetroEngine {
     return true;
   }
 
+  public startCampaignScenario(scenarioId: string): boolean {
+    const scenario = CAMPAIGN_SCENARIOS.find(s => s.id === scenarioId);
+    if (!scenario) return false;
+
+    this.state.gameMode = 'campaign';
+    this.state.stats.totalPassengersDelivered = 0;
+    this.state.stats.totalDays = 1;
+    this.state.stats.todayPassengers = 0;
+    this.state.stats.dailyHistory = [];
+    this.state.currentDayIndex = 0;
+    this.state.timeOfDayHours = 7.0;
+    this.state.isGameOver = false;
+    this.state.gameOverReason = null;
+
+    // Set scenario budget & fleet
+    this.state.money = scenario.initialMoney ?? 1500;
+    this.state.inventory = {
+      availableLines: scenario.initialLines ?? 3,
+      unassignedTrains: scenario.initialTrains ?? 2,
+      carriages: scenario.initialCarriages ?? 1,
+      interchangeTokens: 1,
+      tunnelTokens: 2
+    };
+
+    // Restore stations cleanly
+    this.restoreDefaultStations();
+
+    // Weather setup
+    if (scenario.fixedWeather) {
+      this.setWeather(scenario.fixedWeather);
+    } else {
+      this.setWeather('sunny');
+    }
+
+    // Set campaign state
+    this.state.campaignState = {
+      scenarioId: scenario.id,
+      targetPassengers: scenario.targetPassengers,
+      currentDelivered: 0,
+      timeLimitDays: scenario.timeLimitDays,
+      currentDay: 1,
+      isWon: false,
+      isFailed: false
+    };
+
+    soundEngine.playFanfare();
+    const worldW = this.mapConfig.worldWidth || 2400;
+    const worldH = this.mapConfig.worldHeight || 1700;
+    this.addFloatingText(worldW / 2, worldH / 2, `🎯 BẮT ĐẦU: ${scenario.titleVi}`, '#F59E0B');
+    return true;
+  }
+
   // --- Persistence & Save System ---
 
   public serialize(): string {
     return JSON.stringify({
-      version: 1,
+      version: 3,
       cityId: this.mapConfig.id,
       money: this.state.money,
       timeOfDayHours: this.state.timeOfDayHours,
@@ -936,6 +1984,8 @@ export class MetroEngine {
       stationPool: this.stationPool,
       nextStationSpawnTime: this.nextStationSpawnTime,
       passengerIdCounter: this.passengerIdCounter,
+      weather: this.state.weather,
+      activeIncident: this.state.activeIncident,
       timestamp: Date.now()
     });
   }
@@ -944,6 +1994,11 @@ export class MetroEngine {
     try {
       const data = JSON.parse(savedJson);
       if (!data || !data.cityId || data.cityId !== this.mapConfig.id) {
+        return false;
+      }
+
+      // If restoring Hanoi from old small version, start fresh with the grand new Hanoi map!
+      if (this.mapConfig.id === 'hanoi' && (!data.version || data.version < 3)) {
         return false;
       }
 
@@ -971,7 +2026,9 @@ export class MetroEngine {
           moneyEarned: data.stats.moneyEarned ?? 0,
           peakLinesUsed: data.stats.peakLinesUsed ?? 0,
           peakTrainsUsed: data.stats.peakTrainsUsed ?? 0,
-          crowdedWarningsAvoided: data.stats.crowdedWarningsAvoided ?? 0
+          crowdedWarningsAvoided: data.stats.crowdedWarningsAvoided ?? 0,
+          todayPassengers: data.stats.todayPassengers ?? 0,
+          dailyHistory: Array.isArray(data.stats.dailyHistory) ? data.stats.dailyHistory : []
         };
       }
 
@@ -980,12 +2037,16 @@ export class MetroEngine {
           ...s,
           passengers: Array.isArray(s.passengers) ? s.passengers : [],
           overcrowdedTimer: Math.min(0.5, s.overcrowdedTimer || 0), // avoid spawning directly into instant game over
-          isOvercrowded: false
+          isOvercrowded: false,
+          isFlooded: !!s.isFlooded
         }));
       }
 
       if (Array.isArray(data.lines)) {
-        this.state.lines = data.lines;
+        this.state.lines = data.lines.map((l: MetroLine) => ({
+          ...l,
+          type: l.type || 'metro'
+        }));
       }
 
       if (Array.isArray(data.trains)) {
@@ -1006,6 +2067,43 @@ export class MetroEngine {
 
       if (typeof data.passengerIdCounter === 'number') {
         this.passengerIdCounter = data.passengerIdCounter;
+      }
+
+      if (data.weather) {
+        this.state.weather = {
+          ...data.weather,
+          current: data.weather.current || data.weather.type || 'sunny',
+          type: data.weather.type || 'sunny'
+        };
+      }
+
+      if (data.activeIncident) {
+        if (typeof data.activeIncident.remainingSeconds === 'number' && data.activeIncident.remainingSeconds <= 0) {
+          this.clearActiveIncident();
+        } else if (this.state.weather.type !== 'flooded') {
+          this.clearActiveIncident();
+        } else {
+          this.state.activeIncident = data.activeIncident;
+        }
+      } else if (this.state.weather.type !== 'flooded') {
+        this.clearActiveIncident();
+      }
+
+      if (!this.state.inspectorState) {
+        this.state.inspectorState = {
+          status: 'idle',
+          currentStationId: null,
+          currentTrainId: null,
+          targetLineId: null,
+          visitedStationIds: [],
+          timeRemaining: 90,
+          cooldownRemaining: 0,
+          targetCount: 5,
+          rewardAmount: 1500
+        };
+      } else {
+        this.state.inspectorState.rewardAmount = 300 * (this.state.inspectorState.targetCount || 5);
+        this.state.inspectorState.targetCount = this.state.inspectorState.targetCount || 5;
       }
 
       this.state.isGameOver = false;

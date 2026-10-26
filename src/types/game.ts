@@ -20,6 +20,7 @@ export interface Station {
   isOvercrowded: boolean;
   spawnTime: number;
   pulseTimer?: number;
+  isFlooded?: boolean;
 }
 
 export interface LineSegment {
@@ -27,6 +28,8 @@ export interface LineSegment {
   toId: string;
   crossesRiver: boolean;
 }
+
+export type MetroLineType = 'metro' | 'intercity' | 'high_speed';
 
 export interface MetroLine {
   id: string;
@@ -36,6 +39,7 @@ export interface MetroLine {
   darkColor: string;
   stationIds: string[];
   isLoop: boolean;
+  type?: MetroLineType;
 }
 
 export interface Train {
@@ -62,8 +66,83 @@ export interface FloatingText {
 }
 
 export interface RiverPolygon {
+  name?: string;
   points: { x: number; y: number }[];
   isWaterBody?: boolean;
+  isIsland?: boolean;
+}
+
+export interface MapLandmark {
+  id: string;
+  nameVi: string;
+  nameEn: string;
+  category: 'heritage' | 'government' | 'modern' | 'transport' | 'culture' | 'park';
+  x: number;
+  y: number;
+  yearBuilt?: string;
+  iconType: 'temple' | 'pagoda' | 'mausoleum' | 'opera' | 'airport' | 'train' | 'stadium' | 'tower' | 'park' | 'lake_island' | 'flag';
+  badgeText?: string;
+  descriptionVi: string;
+  descriptionEn: string;
+}
+
+export interface MapBridge {
+  id: string;
+  nameVi: string;
+  nameEn: string;
+  type: 'cantilever' | 'cable_stayed' | 'truss' | 'girder' | 'arch';
+  p1: { x: number; y: number };
+  p2: { x: number; y: number };
+  color?: string;
+  width?: number;
+  towers?: number;
+  yearBuilt?: number;
+  descriptionVi?: string;
+  descriptionEn?: string;
+}
+
+export interface MapPark {
+  id: string;
+  nameVi: string;
+  nameEn: string;
+  points: { x: number; y: number }[];
+}
+
+export interface MapRoad {
+  id: string;
+  nameVi: string;
+  nameEn: string;
+  isRing?: boolean;
+  points: { x: number; y: number }[];
+}
+
+export interface MapDistrictLabel {
+  nameVi: string;
+  nameEn: string;
+  x: number;
+  y: number;
+}
+
+export interface RealMetroLinePreset {
+  id: string;
+  nameVi: string;
+  nameEn: string;
+  color: string;
+  darkColor: string;
+  textColor: string;
+  stationIds: string[];
+  isLoop?: boolean;
+}
+
+export interface StationData {
+  id?: string;
+  shape: StationShape;
+  x: number;
+  y: number;
+  name: string;
+  districtVi?: string;
+  districtEn?: string;
+  historicalNoteVi?: string;
 }
 
 export interface CityMapConfig {
@@ -72,12 +151,61 @@ export interface CityMapConfig {
   nameEn: string;
   descriptionVi: string;
   descriptionEn: string;
-  initialStations: { id?: string; shape: StationShape; x: number; y: number; name: string }[];
+  version?: number;
+  worldWidth?: number;
+  worldHeight?: number;
+  initialStations: StationData[];
   riverPolygons: RiverPolygon[];
-  stationPool: { shape: StationShape; x: number; y: number; name: string }[];
+  stationPool: StationData[];
+  landmarks?: MapLandmark[];
+  bridges?: MapBridge[];
+  parks?: MapPark[];
+  arterialRoads?: MapRoad[];
+  districts?: MapDistrictLabel[];
+  realLinesPreset?: RealMetroLinePreset[];
 }
 
-export type GameMode = 'standard' | 'zen' | 'rush_hour';
+export type GameMode = 'standard' | 'zen' | 'rush_hour' | 'campaign';
+
+export interface CampaignScenario {
+  id: string;
+  titleVi: string;
+  titleEn: string;
+  subtitleVi: string;
+  subtitleEn: string;
+  descriptionVi: string;
+  descriptionEn: string;
+  cityId: string;
+  targetPassengers: number;
+  timeLimitDays: number;
+  initialLines?: number;
+  initialTrains?: number;
+  initialCarriages?: number;
+  initialMoney?: number;
+  fixedWeather?: WeatherType;
+  specialRulesVi: string[];
+  specialRulesEn: string[];
+  starThresholds: {
+    oneStar: number; // e.g. target reached
+    twoStarDays: number; // reached within X days
+    threeStarDays: number; // reached within Y days
+  };
+}
+
+export interface CampaignState {
+  scenarioId: string;
+  targetPassengers: number;
+  currentDelivered: number;
+  timeLimitDays: number;
+  currentDay: number;
+  isWon: boolean;
+  isFailed: boolean;
+  failReason?: string;
+  starsEarned?: number;
+}
+
+
+export type TerrainToolMode = 'none' | 'add_station' | 'draw_river' | 'erase_water';
 
 export interface GameInventory {
   availableLines: number;
@@ -97,6 +225,15 @@ export interface WeeklyChoiceOption {
   apply: (inv: GameInventory) => GameInventory;
 }
 
+export interface DailyPassengerRecord {
+  dayIndex: number;
+  dayNameVi: string;
+  dayNameEn: string;
+  passengers: number;
+  totalDelivered: number;
+  revenue?: number;
+}
+
 export interface GameStats {
   totalPassengersDelivered: number;
   totalDays: number;
@@ -105,4 +242,48 @@ export interface GameStats {
   peakLinesUsed: number;
   peakTrainsUsed: number;
   crowdedWarningsAvoided: number;
+  todayPassengers?: number;
+  dailyHistory?: DailyPassengerRecord[];
 }
+
+export type WeatherType = 'sunny' | 'rainy' | 'storm' | 'flooded';
+
+export interface WeatherState {
+  type: WeatherType;
+  current: WeatherType;
+  temperature: number; // in Celsius e.g. 28-34
+  rainIntensity: number; // 0 to 1
+  descriptionVi: string;
+  descriptionEn: string;
+  floodedStationIds: string[];
+  durationRemaining: number; // in seconds
+}
+
+export interface UrbanIncident {
+  id: string;
+  titleVi: string;
+  titleEn: string;
+  descriptionVi: string;
+  descriptionEn: string;
+  affectedStationIds: string[];
+  speedMultiplier: number;
+  remainingSeconds: number;
+  rewardEarned?: number;
+}
+
+export interface InspectorState {
+  status: 'idle' | 'selecting_station' | 'patrolling' | 'completed' | 'failed';
+  currentStationId: string | null;
+  currentTrainId: string | null;
+  targetLineId?: string | null;
+  visitedStationIds: string[];
+  plannedStationIds?: string[];
+  lastTrainId?: string | null;
+  dwellAtStationTimer?: number;
+  timeRemaining: number;       // e.g. 90 seconds + bonus
+  cooldownRemaining: number;   // 30 seconds
+  targetCount: number;         // min 5 stations
+  rewardAmount: number;        // formula: $300 x station count
+  failureReason?: string;
+}
+

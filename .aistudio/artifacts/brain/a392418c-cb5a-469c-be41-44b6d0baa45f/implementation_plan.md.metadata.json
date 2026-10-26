@@ -1,0 +1,6 @@
+{
+  "summary":  "Kế hoạch chi tiết triển khai tính năng Thanh tra Tuyến tàu (Metro Line Inspector), mô phỏng nhân viên thanh tra xuất phát từ ga do người chơi chọn, di chuyển tuần tra qua các đoàn tàu và hệ thống ga, yêu cầu đạt tối thiểu 5 ga trong thời gian quy định mà không để ga bị quá tải để nhận thưởng $2,000.",
+  "updatedAt":  "2026-10-25T08:59:09.394609417Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
