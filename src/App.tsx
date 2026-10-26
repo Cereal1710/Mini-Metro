@@ -14,6 +14,7 @@ import { CreativeToolbar } from './components/CreativeToolbar';
 import { CampaignHUD } from './components/CampaignHUD';
 import { InspectorHUD } from './components/InspectorHUD';
 import { InspectorModal } from './components/InspectorModal';
+import { TopLeftMapCards } from './components/TopLeftMapCards';
 import { VictoryModal } from './components/VictoryModal';
 import { ZoomIn, ZoomOut, Maximize2, Move } from 'lucide-react';
 
@@ -1604,33 +1605,35 @@ export default function App() {
             }`}
           />
 
-          {/* Metro Line Inspector Real-time Simulation HUD */}
-          {state?.inspectorState && (
-            <InspectorHUD
+          {/* Top-Left Map Cards Dock: Inspector Patrol, Passenger Analytics, City Weather (Collapsible vertically) */}
+          {state && (
+            <TopLeftMapCards
               inspectorState={state.inspectorState}
               stations={state.stations}
               trains={state.trains}
               lines={state.lines}
+              stats={state.stats}
+              currentDayIndex={state.currentDayIndex}
+              weather={state.weather}
+              activeIncident={state.activeIncident}
+              isRushHour={state.isRushHour}
+              money={state.money}
               theme={theme}
               lang={lang}
-              onStartSelecting={() => {
-                if (engineRef.current) {
-                  engineRef.current.startSelectingInspectorStation();
-                  syncSnapshot();
-                }
-              }}
-              onAlightAtStation={() => {
+              onOpenInspectorModal={() => setIsInspectorModalOpen(true)}
+              onAlightInspectorAtStation={() => {
                 if (engineRef.current) {
                   engineRef.current.alightInspectorAtStation();
                   syncSnapshot();
                 }
               }}
-              onCancel={() => {
+              onCancelInspector={() => {
                 if (engineRef.current) {
                   engineRef.current.cancelInspector();
                   syncSnapshot();
                 }
               }}
+              onDismissIncident={handleDismissIncident}
             />
           )}
 

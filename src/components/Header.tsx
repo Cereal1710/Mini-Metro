@@ -506,7 +506,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <span className="font-bold">{lang === 'vi' ? 'Thanh tra Tuyến tàu' : 'Metro Line Inspector'}</span>
                   </div>
                   <span className="text-[10px] font-mono font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
-                    +$4,000
+                    +300$/ga
                   </span>
                 </button>
               )}
